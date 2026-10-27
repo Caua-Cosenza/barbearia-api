@@ -1,0 +1,41 @@
+# ===========================================================================
+# Fixture de compatibilidade Node -> Java
+#
+# ORIGEM: gerado pelo backend Node (Node v22.22.2, modulo crypto nativo) com
+# a mesma implementacao que esta em producao:
+#
+#     aes-256-cbc, IV aleatorio de 16 bytes por registro, padding PKCS#7,
+#     plaintext em UTF-8, saida no formato  hex(iv) + ":" + hex(ciphertext)
+#
+# PARA QUE SERVE: provar que o CryptoService em Java decifra byte a byte o
+# que o Node cifrou. Se o algoritmo bate com uma chave, bate com qualquer
+# uma -- por isso nao e necessario (nem permitido) usar a chave real.
+#
+# CHAVE: FICTICIA, existe apenas para este teste.
+#
+#     4f8a2c1e9b7d3a5f6e0c8b4d2a9f1e7c3b5d8a0f2e6c4b9d1a7f3e5c8b2d6a0f
+#
+# A ENCRYPTION_KEY de producao NUNCA entra em codigo, teste ou fixture, e
+# nenhum valor cifrado real foi copiado do banco: as colunas name_encrypted
+# e phone_encrypted contem nome e telefone de clientes, dado pessoal sob
+# LGPD. Todos os plaintexts abaixo sao inventados.
+#
+# FORMATO DE CADA LINHA:
+#
+#     <plaintext em JSON> => <hex(iv)>:<hex(ciphertext)>
+#
+# O plaintext vem como literal JSON (entre aspas) para que a string vazia e
+# os espacos nas pontas fiquem inequivocos. Este arquivo e UTF-8 sem BOM --
+# nao reencodar, ou os casos de acento e emoji perdem o sentido.
+#
+# CASOS: nome simples, telefone, acentos, emoji (fora do BMP, 4 bytes em
+# UTF-8), string vazia, 16 bytes exatos (forca um bloco inteiro de padding)
+# e 200 caracteres (multiplos blocos).
+# ===========================================================================
+"Jhonatan Correa" => a3ed0bb6adf96082f5da1cba18e462b8:63b591e7b5fc62804ec65a1a60fb7f71
+"5522992718402" => ad63a86d283e3ab72e61764e66df4d36:3ab61f6d371d6b1053fcbbdfdec5e62f
+"João da Conceição Ação" => 501f4e6435159b4cc7fe2c75b95cded4:ec26fc8fcea0305ce0e6971d6354cc7578bd4d97cf730473356a4cb77440448a
+"Ana 🎉 Souza" => 5e7d5c4ba8db52c2a2cfdd2f4c7a035b:85f7032c0689e71aea58742b9358a28d
+"" => bcada6eac4b100be24deafc690ae99f4:95c05346e4efc1379c3267068cd48337
+"exatamente16byte" => d7ad3cc7c96327476b8e786c1e795316:2d45ed4c4f00f8bd8bdcbbf1cf7965364b732b45f1a69cbdf5f7fb50dfe3a19c
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" => 941e6775a70f8d0e74553c695adef6d0:70208c6f91e9ca91dd165ee75ad98b18bd930b17c7e7fe9a550b191577b4ef72833455f7869c80db1e32ac7f957cb62100901f424f660ed16b05e9661680b07e4123b4ad8db01870113c28da90e1d454eff1e588f3214738cde2cc88a3607bdfd1f365c58dddab33ebe9df19ec5392e8b94f7038249c056d6810592b51bef542f92f0d9938e41893884fc83960e898998d14f1d90f434627a8cdb7633e8a429883c836f64a85ec3ad71e29cad211ccfa14d9d541e151df40cce8c1c69e7a7fba6f47581290051ae4f1488ad6a6d27dab
