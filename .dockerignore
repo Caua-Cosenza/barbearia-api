@@ -1,0 +1,11 @@
+target/
+.git/
+.idea/
+*.md
+.env
+
+# Nunca entra na imagem
+*.sql
+.vscode/
+.DS_Store
+*.log

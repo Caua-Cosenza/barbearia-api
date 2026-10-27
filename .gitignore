@@ -1,0 +1,50 @@
+# --- Build ------------------------------------------------------------------
+target/
+build/
+!**/src/main/**/target/
+!**/src/test/**/target/
+!**/src/main/**/build/
+!**/src/test/**/build/
+.mvn/wrapper/maven-wrapper.jar
+
+# --- Segredos ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Dumps de banco ---------------------------------------------------------
+# Um dump revela a estrutura do banco de producao. As migrations ficam
+# versionadas em src/main/resources/db/migration; dumps na raiz, nunca.
+/*.sql
+*.dump
+*.sql.gz
+
+# --- Logs -------------------------------------------------------------------
+*.log
+logs/
+
+# --- IDE --------------------------------------------------------------------
+.idea/
+*.iws
+*.iml
+*.ipr
+.vscode/
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+# --- Sistema operacional ----------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# --- Gerado pelo Spring Initializr ------------------------------------------
+HELP.md
