@@ -1,15 +1,24 @@
 package com.cauacosenza.barbearia.integration;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import com.cauacosenza.barbearia.domain.entity.Appointment;
 import com.cauacosenza.barbearia.domain.entity.Barber;
@@ -18,8 +27,12 @@ import com.cauacosenza.barbearia.domain.entity.Service;
 import com.cauacosenza.barbearia.domain.enums.AppointmentStatus;
 import com.cauacosenza.barbearia.repository.AppointmentRepository;
 import com.cauacosenza.barbearia.repository.BarberRepository;
+import com.cauacosenza.barbearia.repository.BarberScheduleRepository;
+import com.cauacosenza.barbearia.repository.ScheduleBlockRepository;
 import com.cauacosenza.barbearia.repository.ServiceRepository;
 import com.cauacosenza.barbearia.service.SlotQueryMapper;
+
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Base dos testes que precisam de Postgres de verdade.
@@ -47,16 +60,18 @@ import com.cauacosenza.barbearia.service.SlotQueryMapper;
  * valor cifrado pelo Node funcione. Nenhuma chave de producao aparece em
  * teste.
  */
-@SpringBootTest(properties = {
-		"ENCRYPTION_KEY=4f8a2c1e9b7d3a5f6e0c8b4d2a9f1e7c3b5d8a0f2e6c4b9d1a7f3e5c8b2d6a0f"
-})
+@SpringBootTest(properties = { SegredosDeTeste.ENCRYPTION_KEY,
+		SegredosDeTeste.JWT_SECRET, SegredosDeTeste.JWT_REFRESH_SECRET })
+@AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
 public abstract class AbstractPostgresIntegrationTest {
 
+	/** Cabecalho que o {@code ClientIpResolver} consulta primeiro. */
+	private static final String CF_CONNECTING_IP = "CF-Connecting-IP";
+
 	/** A mesma chave do {@code @SpringBootTest} acima, para uso direto. */
-	protected static final String TEST_KEY =
-			"4f8a2c1e9b7d3a5f6e0c8b4d2a9f1e7c3b5d8a0f2e6c4b9d1a7f3e5c8b2d6a0f";
+	protected static final String TEST_KEY = SegredosDeTeste.CHAVE_DE_CRIPTOGRAFIA;
 
 	@Autowired
 	protected AppointmentRepository appointments;
@@ -72,6 +87,16 @@ public abstract class AbstractPostgresIntegrationTest {
 
 	@Autowired
 	protected JdbcTemplate jdbc;
+
+	@Autowired
+	protected BarberScheduleRepository schedules;
+
+	@Autowired
+	protected ScheduleBlockRepository blocks;
+
+	/** O mesmo {@code ObjectMapper} da aplicacao, com o serializador de datas. */
+	@Autowired
+	protected ObjectMapper json;
 
 	/**
 	 * Limpa as tabelas antes de cada teste.
@@ -89,6 +114,44 @@ public abstract class AbstractPostgresIntegrationTest {
 				               "professional_availability", "refresh_tokens",
 				               "professionals", "services", "users" CASCADE
 				""");
+	}
+
+	// =======================================================================
+	// Requisicoes HTTP
+	//
+	// Cada requisicao leva um "IP" proprio no CF-Connecting-IP porque o rate
+	// limit e real nestes testes: a criacao de agendamento tem balde de 10 por
+	// minuto, e uma classe de teste faz mais do que isso. Sem variar a chave,
+	// os ultimos testes recebem 429 por um motivo que nada tem a ver com o que
+	// verificam. O valor e um UUID e nao um IP sorteado: o resolvedor nao
+	// valida o formato e um octeto aleatorio colidiria de vez em quando,
+	// produzindo falha intermitente.
+	// =======================================================================
+
+	protected static MockHttpServletRequestBuilder postJson(String url, String corpo) {
+		return post(url)
+				.header(CF_CONNECTING_IP, chaveDeRateLimitUnica())
+				.contentType(MediaType.APPLICATION_JSON)
+				.content(corpo);
+	}
+
+	protected static MockHttpServletRequestBuilder putJson(String url, String corpo) {
+		return put(url)
+				.header(CF_CONNECTING_IP, chaveDeRateLimitUnica())
+				.contentType(MediaType.APPLICATION_JSON)
+				.content(corpo);
+	}
+
+	protected static MockHttpServletRequestBuilder getComIpProprio(String url) {
+		return get(url).header(CF_CONNECTING_IP, chaveDeRateLimitUnica());
+	}
+
+	protected static MockHttpServletRequestBuilder deleteComIpProprio(String url) {
+		return delete(url).header(CF_CONNECTING_IP, chaveDeRateLimitUnica());
+	}
+
+	private static String chaveDeRateLimitUnica() {
+		return "teste-" + UUID.randomUUID();
 	}
 
 	// =======================================================================

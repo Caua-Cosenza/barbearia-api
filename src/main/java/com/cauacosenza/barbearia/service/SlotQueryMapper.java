@@ -210,6 +210,20 @@ public class SlotQueryMapper {
 	}
 
 	/**
+	 * A hora no formato {@code "HH:MM"} que o frontend espera em cada slot de
+	 * {@code available-times}.
+	 *
+	 * <p>Usa o mesmo {@code DateTimeFormatter} da leitura, entao ida e volta
+	 * sao simetricas. {@link LocalTime#toString()} <i>nao</i> serve: ele omite
+	 * os minutos quando sao zero em alguns casos e acrescenta segundos quando
+	 * existem, e o frontend compara essas strings com as que recebeu.
+	 */
+	public String toHoraTexto(LocalTime hora) {
+		Objects.requireNonNull(hora, "hora nao pode ser nula");
+		return HORA.format(hora);
+	}
+
+	/**
 	 * A data no formato em que {@code blocked_slots.date} a guarda:
 	 * {@code "YYYY-MM-DD"}.
 	 */

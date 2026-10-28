@@ -19,7 +19,13 @@ import com.cauacosenza.barbearia.domain.entity.Service;
  */
 public interface ServiceRepository extends JpaRepository<Service, String> {
 
-	List<Service> findByActiveTrueOrderByNameAsc();
+	/**
+	 * Os servicos ativos na ordem de cadastro.
+	 *
+	 * <p>{@code createdAt} e nao {@code name}: e a ordem em que a home exibe o
+	 * catalogo, e ordenar por nome a reorganizaria. Ver {@code CatalogService}.
+	 */
+	List<Service> findByActiveTrueOrderByCreatedAtAsc();
 
 	List<Service> findByIdInAndActiveTrue(Collection<String> ids);
 

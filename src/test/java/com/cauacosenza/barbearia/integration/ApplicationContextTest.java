@@ -12,11 +12,10 @@ import org.springframework.test.context.ActiveProfiles;
  * <p>Teste barato e de alto retorno: pega erro de configuracao, bean mal
  * declarado e migration invalida antes de qualquer endpoint existir.
  */
-@SpringBootTest(properties = {
-		// Chave FICTICIA, so para o contexto subir. Declarada aqui, e nao no
-		// application.yml, para que nenhum valor de chave more no yml.
-		"ENCRYPTION_KEY=4f8a2c1e9b7d3a5f6e0c8b4d2a9f1e7c3b5d8a0f2e6c4b9d1a7f3e5c8b2d6a0f"
-})
+// Segredos FICTICIOS, declarados em codigo de teste e nao no application.yml,
+// para que nenhum valor de chave more no yml. Ver SegredosDeTeste.
+@SpringBootTest(properties = { SegredosDeTeste.ENCRYPTION_KEY,
+		SegredosDeTeste.JWT_SECRET, SegredosDeTeste.JWT_REFRESH_SECRET })
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
 class ApplicationContextTest {

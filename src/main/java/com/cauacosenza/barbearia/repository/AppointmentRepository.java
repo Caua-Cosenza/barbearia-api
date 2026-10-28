@@ -94,4 +94,62 @@ public interface AppointmentRepository extends JpaRepository<Appointment, String
 	 */
 	Optional<Appointment> findByCancelToken(String cancelToken);
 
+	/**
+	 * Todos os agendamentos de um intervalo, <b>sem filtrar status</b>, para a
+	 * tabela do painel.
+	 *
+	 * <p>O contraste com {@link #buscarQueOcupamAgenda} e deliberado: o
+	 * calculo de horarios so quer o que ocupa agenda, mas o painel precisa
+	 * mostrar tambem o que foi cancelado e o no-show — e justamente o historico
+	 * do dia que o dono quer ver.
+	 *
+	 * <p>O {@code join fetch} nas quatro associacoes evita N+1 e, mais do que
+	 * isso, evita {@code LazyInitializationException}: a resposta e montada
+	 * fora da transacao e precisa do nome do servico, do profissional e da PII
+	 * da conta. {@code bookedServices} e a unica colecao no fetch — duas
+	 * colecoes num mesmo {@code join fetch} fariam o Hibernate recusar a
+	 * consulta ("cannot simultaneously fetch multiple bags").
+	 *
+	 * <p>{@code user} entra com {@code left join} porque e nulo em reserva
+	 * publica, que e o caso comum.
+	 */
+	@Query("""
+			select distinct a from Appointment a
+			join fetch a.professional
+			join fetch a.service
+			left join fetch a.user
+			left join fetch a.bookedServices item
+			left join fetch item.service
+			where a.scheduledAt >= :inicio
+			  and a.scheduledAt <= :fim
+			order by a.scheduledAt
+			""")
+	List<Appointment> buscarDoPeriodoParaOPainel(
+			@Param("inicio") Instant inicio,
+			@Param("fim") Instant fim);
+
+	/**
+	 * Quantos agendamentos de um intervalo estao em algum dos status dados.
+	 *
+	 * <p>Os limites sao <b>os dois inclusivos</b>, ao contrario de
+	 * {@link #buscarQueOcupamAgenda}. Nao e descuido: o Node monta o fim do dia
+	 * como {@code 23:59:59.999} e compara com {@code lte}, e os contadores do
+	 * painel tem que bater numero a numero com os dele.
+	 */
+	long countByScheduledAtBetweenAndStatusIn(
+			Instant inicio, Instant fim, Collection<AppointmentStatus> statuses);
+
+	/**
+	 * Quantos no-shows existem <b>no banco inteiro</b>, sem recorte de
+	 * periodo.
+	 *
+	 * <p>E o comportamento do Node
+	 * ({@code prisma.appointment.count({ where: { status: 'NO_SHOW' } })}) e
+	 * esta reproduzido de proposito, apesar de os outros tres contadores do
+	 * painel serem por periodo. Divergencia conhecida, registrada no README:
+	 * corrigi-la mudaria um numero que o dono ve todo dia, e isso e decisao
+	 * dele, nao desta migracao.
+	 */
+	long countByStatus(AppointmentStatus status);
+
 }

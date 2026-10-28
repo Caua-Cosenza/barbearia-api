@@ -58,6 +58,139 @@ Em caso de erro, `success` é `false`, `data` é `null` e `error` traz o código
 erro. O envelope nunca muda de forma, porque o frontend em produção depende
 dele.
 
+O `timestamp` reproduz exatamente o `new Date().toISOString()` do JavaScript:
+UTC, sempre com três casas de milissegundo, sempre terminando em `Z`. Ver
+`JacksonConfig`.
+
+---
+
+## Endpoints públicos
+
+Os caminhos são os do `src/api/endpoints.ts` do frontend, que é o contrato.
+
+| Método | Caminho | O que faz |
+| --- | --- | --- |
+| GET | `/api/v1/services` | catálogo ativo, com `amountCents` |
+| GET | `/api/v1/professionals` | profissionais ativos, com `availability` embutida |
+| POST | `/api/v1/available-times` | horários livres de um dia |
+| POST | `/api/v1/appointments/public` | reserva de visitante (201) |
+| GET | `/api/v1/cancel/{token}` | dados da tela de cancelamento |
+| POST | `/api/v1/cancel/{token}` | efetiva o cancelamento |
+
+Rotas de login, de `/admin/*` e `POST /api/v1/appointments` (cliente logado)
+são da Fase 6 e hoje respondem negado.
+
+### Erros
+
+| Status | Quando |
+| --- | --- |
+| 400 | regra de negócio sobre entrada bem formada — dia sem jornada, fora do expediente, prazo de cancelamento vencido |
+| 404 | recurso inexistente **ou inativo** |
+| 409 | horário já ocupado, ou bloqueado pelo profissional |
+| 422 | falha de validação de entrada (equivalente ao `ZodError` do Node) |
+| 429 | rate limit |
+| 500 | defeito — resposta genérica, nada da stack |
+
+### Rate limit
+
+Por IP, com os valores do Node: **5/min** em `POST /api/v1/auth/**`,
+**10/min** em `POST /api/v1/appointments/**`, **30/min** em
+`POST /api/v1/available-times`, **30/min** no resto. `/actuator/health` fica de
+fora. Os baldes são independentes por rota.
+
+---
+
+## Autenticação e rotas de admin
+
+Login por **JWT em cookies `HttpOnly`** — o JavaScript do painel nunca vê um
+token. Daí o `AuthContext` chamar `GET /admin/health` no boot: é o único jeito
+de descobrir se há sessão.
+
+| Método | Caminho | O que faz |
+| --- | --- | --- |
+| POST | `/api/v1/auth/register` | cria conta (ver ressalva abaixo) |
+| POST | `/api/v1/auth/login` | grava os dois cookies |
+| POST | `/api/v1/auth/refresh` | rotaciona o par de tokens |
+| POST | `/api/v1/auth/logout` | limpa os cookies e revoga o refresh |
+| GET | `/api/v1/admin/health` | teste de sessão (401 é resposta normal) |
+| GET | `/api/v1/admin/stats` | os quatro contadores |
+| GET | `/api/v1/admin/appointments?date=` | agenda do dia, todos os status |
+| PUT | `/api/v1/admin/appointments/{id}/status` | finalizar / cancelar / no-show |
+| POST / GET / DELETE | `/api/v1/admin/blocked-slots` | reservar horário |
+| POST | `/api/v1/admin/push-subscription` | inscrição Web Push |
+
+Tudo em `/admin/**` exige `ROLE_ADMIN`. Uma conta `CLIENT` autentica e recebe
+**403**, não 401 — mandar 401 faria o painel redirecionar para o login num
+laço infinito, já que logar de novo daria o mesmo papel.
+
+### Os dois tokens
+
+|  | access | refresh |
+| --- | --- | --- |
+| segredo | `JWT_SECRET` | `JWT_REFRESH_SECRET` |
+| claims | `sub` + `role` | `sub` + `jti` |
+| validade | 15 minutos | 7 dias |
+| cookie `Path` | `/` | `/api/v1/auth/refresh` |
+
+Os segredos são diferentes de propósito: um access token vazado não vira
+refresh token. O refresh **não carrega `role`** — o papel é relido do banco a
+cada renovação, então quem for rebaixado perde o acesso em no máximo 15
+minutos em vez de carregar o papel antigo por sete dias.
+
+O `Path` restrito do refresh significa que ele não trafega em nenhuma das
+dezenas de requisições que o painel faz: um log de proxy mal configurado expõe
+o token de 15 minutos, não a credencial de sete dias.
+
+**Rotação:** cada refresh apaga o token usado e grava um novo. Um refresh token
+serve uma vez só.
+
+### O hash do refresh token é SHA-256, não bcrypt
+
+A coluna `refresh_tokens.token_hash` tem índice único e a validação é uma busca
+exata por esse hash. Bcrypt tem salt aleatório, produz hash diferente a cada
+chamada e tornaria a busca impossível. SHA-256 serve aqui porque a entrada é um
+JWT de alta entropia, não uma senha — não há dicionário para atacar. É o que o
+`authService.ts` faz (`createHash('sha256').digest('hex')`).
+
+É essa tabela que dá **efeito real** ao logout: um JWT não pode ser desfeito, e
+é a ausência da linha que faz um token revogado parar de servir.
+
+### As flags dos cookies
+
+| flag | dev | prod |
+| --- | --- | --- |
+| `HttpOnly` | \<-- sempre --> | |
+| `Secure` | false | true |
+| `SameSite` | `Strict` | `None` |
+| `Domain` | ausente | `.barbeariajhonatan.com` |
+
+**O ponto na frente do domain não é detalhe.** Sem ele o Safari do iPhone
+descarta o cookie e o painel não loga no celular — funciona em todo navegador
+de desktop, o que torna o diagnóstico caro.
+
+`SameSite=None` e `Secure` andam juntos: `None` sem `Secure` é recusado pelos
+navegadores. `None` é necessário porque front e API ficam em subdomínios
+diferentes em produção; em dev os dois lados são `localhost` (mesmo site,
+portas diferentes) e `Strict` funciona.
+
+Os cookies de limpeza repetem `Domain`, `Path`, `Secure` e `SameSite` do
+original. O navegador identifica um cookie pela trinca *nome + domain + path*:
+um `Set-Cookie` de expiração que erre qualquer um dos três cria um **segundo**
+cookie vazio e deixa o original de pé — o usuário clica em sair e continua
+logado.
+
+### CSRF desabilitado — e o que sustenta isso
+
+Com o JWT em cookie a API é, em princípio, vulnerável a CSRF. O que sustenta a
+decisão: toda rota de escrita exige `Content-Type: application/json`, o que
+**obriga o preflight** CORS, e o preflight é recusado para qualquer origem fora
+de `CORS_ORIGIN`. Um formulário HTML, que escaparia do preflight, só envia
+`x-www-form-urlencoded`, que esta API não aceita.
+
+Vale anotar como dívida: `SameSite=None` em produção tira a camada que o
+navegador daria de graça, e a defesa fica inteiramente no CORS. Um token CSRF
+por sessão seria mais robusto e exigiria mudar o frontend.
+
 ---
 
 ## Como rodar localmente
@@ -157,6 +290,8 @@ src/main/java/com/cauacosenza/barbearia/
 │   ├── request/                o que entra (com validação Bean Validation)
 │   └── response/               o que sai (no envelope do contrato)
 ├── integration/                clientes HTTP externos (Evolution API)
+├── validation/                 constraints de Bean Validation próprias
+├── security/                   JWT, cookies, filtro de autenticação, cifra de PII
 ├── config/                     security, CORS, Redis, rate limit, validação de ambiente
 └── exception/                  tratamento global de erro → envelope de erro
 
@@ -168,6 +303,7 @@ src/test/java/com/cauacosenza/barbearia/
 ├── domain/rules/               testes unitários das regras puras (sem Spring)
 ├── security/                   testes do CryptoService (sem Spring)
 ├── service/                    testes do mapper (sem Spring, sem banco)
+├── controller/                 testes de borda HTTP, services mockados
 └── integration/                testes contra Postgres real (Testcontainers)
 ```
 
@@ -350,6 +486,176 @@ Por isso os status vão **por parâmetro** (`in :statuses`), com o conjunto
 `NAMED_ENUM` não cita o nome do tipo em lugar algum, e a regra de negócio
 continua dentro do repositório, fora do alcance de quem chama.
 
+### Stats: onde o fuso e a semana mordem
+
+Todo recorte de data é em **America/Sao_Paulo**, nunca em UTC. Uma versão
+anterior do Node usava `toISOString()` para achar "hoje" e, depois das 21h —
+quando em UTC já é o dia seguinte — trabalhava com a data errada: bloqueios
+legítimos eram recusados por "estar no passado".
+
+O dia vai de `00:00:00.000` a `23:59:59.999` em Brasília, com **os dois limites
+inclusivos** (`gte`/`lte`), diferente do `[início, fim)` do cálculo de
+horários. A diferença importa para os números baterem com os do Node.
+
+**A semana vai de terça a sábado**, não de domingo a sábado: é a semana de
+trabalho da barbearia. Consequência que parece bug e não é — consultado num
+**domingo ou numa segunda, o contador mostra a semana que acabou de
+terminar**, porque o cálculo anda para trás até a terça mais recente e nesses
+dois dias ela pertence à semana anterior.
+
+Os três primeiros contadores somam `PENDING`, `CONFIRMED` e `COMPLETED`;
+cancelado e no-show não são atendimento.
+
+#### ⚠️ `noShowCount` é acumulado desde sempre
+
+Divergência conhecida do Node, **reproduzida de propósito**: os outros três
+contadores são por período, mas o de no-shows é
+`count({ where: { status: 'NO_SHOW' } })`, sem recorte nenhum. O número só
+cresce, para sempre.
+
+Não foi corrigido porque corrigir mudaria um número que o dono vê todo dia, e
+essa é decisão dele, não desta migração. Entra na lista de trabalho futuro.
+
+### Blocked slots: compatibilidade antes de correção
+
+**Criar bloqueio sobre horário já agendado continua permitido**, e isso é
+deliberado. O comportamento correto seria recusar com 409 e a lista dos
+clientes afetados, exigindo confirmação explícita — mas o painel React em
+produção não sabe tratar esse 409: ele faz `if (res.success)` e, no catch,
+apenas mostra "Erro ao criar bloqueio". Implementar a melhoria agora deixaria
+o Jhonatan **sem conseguir reservar horário nenhum**, que é pior que o furo.
+
+Na prática o efeito é limitado: o bloqueio tira o horário da lista pública mas
+**não cancela** o agendamento existente, que continua no painel do dia. O dono
+vê os dois e resolve por telefone.
+
+A melhoria entra depois do corte, junto com a mudança no frontend.
+
+### O contrato é o frontend, não a documentação
+
+Onde a descrição da fase e o código divergiram, o código venceu. As
+divergências encontradas ao ler `endpoints.ts`, `types/index.ts` e os
+controllers do Node:
+
+| O que se supunha | O que o código diz |
+| --- | --- |
+| `POST /api/v1/appointments` cria reserva de visitante | é **`/appointments/public`**; `/appointments` é a rota de cliente logado, com corpo diferente (`professional_id` em snake_case, um serviço só) — Fase 6 |
+| `GET/POST /api/v1/appointments/cancel/{token}` | é **`/cancel/{token}`**, com prefixo próprio |
+| erro de validação → 400 | o `errorHandler.ts` devolve **422** para `ZodError` |
+| prazo de cancelamento → 422 | o Node devolve **400** |
+| agendar no passado → 400 | **422**: o `.refine` do Zod roda antes do service e sombreia o `if` dele. A mesma assimetria foi reproduzida — ver `AgendamentoNoPassadoException` |
+| push subscription seria rota pública | é `POST /api/v1/admin/push-subscription`, atrás de autenticação — Fase 6 |
+
+E as da Fase 6:
+
+| O que se supunha | O que o código diz |
+| --- | --- |
+| `PATCH /api/v1/admin/appointments/{id}` | é **`PUT .../{id}/status`**, com corpo `{ status }` |
+| só login, refresh e logout em `/auth` | existe também **`POST /auth/register`**, que nenhuma tela chama |
+| o refresh token seria hasheado | é **SHA-256 hex**, não bcrypt — e por um bom motivo (ver acima) |
+| no-shows talvez por período | é **acumulado desde sempre**, confirmado |
+
+Três detalhes a mais:
+
+- **`/admin/health` responde `{"status":"admin ok"}`**, não `"ok"`, com
+  `message: "Admin route active"`.
+- **`GET /admin/blocked-slots` exige `date` **e** `professionalId`**, os dois
+  obrigatórios — diferente de `GET /admin/appointments`, onde `date` é
+  opcional.
+- **O status `PENDING` não é aceito** no `PUT .../status`: o
+  `UpdateStatusSchema` do Node lista só `CONFIRMED`, `CANCELLED`, `COMPLETED` e
+  `NO_SHOW`. O admin não devolve um agendamento ao estado inicial.
+
+#### `POST /auth/register` existe e nada o usa
+
+Foi portado para manter a equivalência, mas **nenhuma tela o chama**: o painel
+tem um único administrador, criado pelo seed. A conta nasce com `CLIENT` e
+portanto não alcança `/admin` — quem se cadastrar recebe 403 em toda rota do
+painel. Ainda assim é uma rota pública que cria conta, ou seja, superfície de
+ataque sem contrapartida. **Recomendo removê-la no corte.**
+
+Dois detalhes que só aparecem lendo o código com atenção:
+
+- **`GET /services` devolve `amountCents`.** Há um comentário em
+  `serviceService.listAll()` dizendo que o preço não sai nessa rota. O
+  comentário está errado: o `select` do repositório inclui `amountCents`, e
+  `ServicesList.tsx` e `BookingModal.tsx` dependem dele para mostrar preço.
+  Removê-lo faria todos os preços virarem "Consultar".
+- **`pages/Booking.tsx` é código morto.** Ela monta `scheduledAt` **sem fuso**
+  (`${date}T${timeSlot}:00`), que o `z.string().datetime({offset:true})`
+  rejeita — confirmado rodando o Zod do próprio projeto. A tela não está
+  roteada em `App.tsx`; o fluxo vivo é `Home` → `BookingModal`, que manda
+  `-03:00`. A API nova recusa o formato sem fuso, igual ao Node.
+
+### O slot precisa caber inteiro no expediente — correção em relação ao Node
+
+O `createPublic` do Node só verificava o **início**:
+`requestedStart >= endMin` recusava. Com expediente até 19:30, um pedido das
+19:20 com 50 minutos passava, e o atendimento terminava **20:10**.
+
+A leitura nunca ofereceu esse horário — o laço do `SlotCalculator` avança
+enquanto `início + duração <= fim` — então as duas pontas discordavam e a
+brecha só era alcançável chamando a API direto. É o mesmo tipo de furo da
+auditoria que encontrou "agendar domingo às 03:00 pela API". Agora a escrita
+exige o mesmo que a leitura, e a mensagem cita os dois horários.
+
+As outras sete validações de criação (futuro, profissional ativo, jornada no
+dia, dentro do expediente, sem colisão com bloqueio, serviços ativos, duração
+`min(soma, 50)`) reproduzem o Node. **Nenhuma delas é a garantia final**: entre
+verificar e inserir há uma janela, e quem a fecha é a constraint de exclusão da
+V2. A divisão é explícita — as validações dão a mensagem boa, o banco dá a
+certeza.
+
+### As duas faces da corrida perdida chegam ao cliente como 409
+
+A descoberta da Fase 4 vira requisito aqui. O `PublicAppointmentService`
+traduz **`DataIntegrityViolationException` e `CannotAcquireLockException`** para
+a mesma `SlotIndisponivelException` → 409 com mensagem de negócio.
+
+Traduzir só a primeira deixaria o deadlock cair no catch-all como **500 "Erro
+inesperado" em 18 de cada 20 disputas reais** por horário. `ConcurrentBookingHttpTest`
+roda 20 iterações de duas requisições HTTP simultâneas e afirma, em todas:
+uma 201, uma 409 com a mensagem certa, uma linha no banco, **e nenhum 5xx**.
+
+### Rate limit por IP — e por que isso diverge do Node
+
+Os limites são os mesmos do Node (10/30/30 por minuto), sobre o Redis que já
+estava configurado, com Bucket4j. A diferença está na **chave**.
+
+O Node usa `keyGenerator: (req) => req.ip`, mas o Fastify só popula `req.ip` a
+partir dos cabeçalhos de proxy quando `trustProxy` está ligado — e o
+`index.ts` cria a instância com `Fastify({ logger: false })`, sem ligar. Atrás
+do Cloudflare e do Railway, `req.ip` é o endereço do **proxy**: na prática
+**todos os clientes do Node compartilham um único balde**. Quem limita por IP
+de verdade hoje é a regra do Cloudflare, que usa `ip.src` na borda.
+
+O `ClientIpResolver` resolve o IP real na ordem `CF-Connecting-IP` →
+primeira entrada de `X-Forwarded-For` → `getRemoteAddr()`. Os dois cabeçalhos
+são forjáveis por quem fala direto com a aplicação sem passar pelo Cloudflare;
+quem fizer isso escolhe a própria chave de rate limit, mas não ganha acesso a
+nada — são usados **só** para limitar taxa, nunca para autorizar. Fechar essa
+brecha exige que o Railway só aceite conexão vinda do Cloudflare, o que é
+configuração de infraestrutura.
+
+### Jackson 3, não Jackson 2
+
+O Spring Boot 4 trocou `com.fasterxml.jackson.databind` por
+`tools.jackson.databind`. As anotações continuam em
+`com.fasterxml.jackson.annotation`, o que torna fácil importar o pacote errado
+e receber "cannot be resolved" num projeto em que o Jackson obviamente existe.
+Os tipos mudaram de nome junto: `JsonSerializer` → `ValueSerializer`,
+`SerializerProvider` → `SerializationContext`,
+`Jackson2ObjectMapperBuilderCustomizer` → `JsonMapperBuilderCustomizer`.
+
+### Ordem dos campos no catálogo
+
+Nenhuma das consultas do Node tem `orderBy`; o Postgres devolve na ordem do
+heap. Como o seed cria os serviços na ordem em que o dono quer vê-los na home —
+os cortes primeiro, os acabamentos no fim — ordenar por nome jogaria
+"Acabamento / Pé" para o topo e reorganizaria a página sem que ninguém tivesse
+pedido. Daí `ORDER BY created_at`: reproduz o que o Node entrega hoje e, ao
+contrário do heap, continua reproduzindo depois de um `UPDATE`.
+
 ### Os testes de integração não são `@DataJpaTest`
 
 `@DataJpaTest` envolve cada teste em uma transação com rollback. Uma constraint
@@ -363,6 +669,91 @@ em cada classe), não é `@Transactional`, e limpa as tabelas com
 As anotações são idênticas em todas as subclasses de propósito: o Spring
 cacheia o contexto por conjunto de anotações, então os containers de Postgres e
 Redis sobem uma vez para a suíte toda.
+
+Os testes de borda HTTP usam `@MockitoBean` e **não** um `@Bean` `@Primary`. A
+primeira versão usava `@Primary` e estava silenciosamente errada: o campo
+`@Autowired` do teste recebia o bean real (envolto no proxy CGLIB da
+transação), então `given(service.metodo(any()))` **executava o método de
+verdade** ao montar o stub, e o teste falhava com a exceção da regra de negócio
+em vez de testar o mapeamento dela.
+
+### Equivalência verificada contra o Node
+
+Os dois backends foram postos no ar ao mesmo tempo, apontando para o **mesmo
+banco** (um `barbearia_cmp` criado só para isso, populado pelo seed real do
+Prisma), e as respostas foram comparadas campo a campo, ignorando apenas o
+`timestamp`:
+
+- `GET /services` e `GET /professionals` — idênticos;
+- `POST /available-times` em 12 cenários (agenda vazia e carregada, durações de
+  10/20/50/90 min e sem `totalDurationMinutes`, os sete dias da semana,
+  profissional de walk-in) — idênticos;
+- os caminhos de erro (profissional e serviço inexistentes, UUID inválido, data
+  malformada, corpo vazio) — mesmo status, mesmo `error`, mesma `message`.
+
+Duas correções saíram dessa comparação: `@NotNull(message = "Required")` no
+lugar de `@NotBlank`, para que campo ausente produza o mesmo texto do Zod; e a
+ordenação dos erros de validação **pela ordem de declaração do record**, que é
+a ordem do schema Zod — o Hibernate Validator entrega as violações em ordem
+imprevisível, então alguma ordenação era obrigatória, e essa custa o mesmo que
+a alfabética e bate com o Node.
+
+Ao rodar os dois juntos: **nunca use `npm start` no Node**, porque ele roda
+`prisma db push` antes de subir e isso removeria a constraint da V2. Use
+`npm run db:seed` e `tsx src/index.ts`.
+
+#### Fase 6: login, painel e cookies
+
+Mesmo método, agora com dados reais no banco (cinco agendamentos com status
+variados, um deles com dois serviços, e dois bloqueios):
+
+- `POST /auth/login` — corpo idêntico, **e o Java autenticou com o hash bcrypt
+  que o seed do Node gravou**, o que prova a compatibilidade do custo 12;
+- `GET /admin/health` com e sem cookie, `GET /admin/stats`,
+  `GET /admin/appointments` (com e sem `date`), `GET /admin/blocked-slots` —
+  idênticos;
+- os caminhos de erro (data malformada, intervalo invertido, bloqueio no
+  passado, remoção de inexistente) — mesmo status, mesmo `error`, mesma
+  `message`;
+- os cabeçalhos `Set-Cookie` dos dois cookies, **flag a flag**: `HttpOnly`,
+  `Max-Age`, `Path` e `SameSite` batem exatamente.
+
+Restaram **duas diferenças, ambas deliberadas**:
+
+1. **O Java acrescenta `Expires` ao `Set-Cookie`.** O `ResponseCookie` do
+   Spring emite `Expires` junto com `Max-Age`; o Node emite só `Max-Age`. Pela
+   RFC 6265 o `Max-Age` tem precedência, então o comportamento é o mesmo — e o
+   `Expires` ainda ajuda navegadores antigos. Não há como desligá-lo sem
+   reimplementar a serialização do cookie à mão.
+2. **`error: "Unauthorized"` em vez de `"Error"`** no login recusado. O Node
+   faz `error.name || 'Client Error'` e acaba vazando o nome da classe de
+   JavaScript. Mesma decisão da Fase 5: o status e a `message` são idênticos, e
+   o `error` carrega um código que significa alguma coisa. O frontend nunca o
+   exibe — o axios rejeita o 401 antes.
+
+Uma correção saiu dessa comparação: os erros de validação de **parâmetro**
+(query e path) passaram a trazer o nome do parâmetro na frente
+(`date: date must be YYYY-MM-DD format`), como o `ZodError` monta
+`${path}: ${message}`.
+
+### Trabalho futuro
+
+Itens que esta fase deliberadamente **não** resolveu, para não quebrar o
+frontend em produção:
+
+1. **Bloqueio sobre horário agendado deveria ser 409** com a lista de clientes
+   afetados e confirmação explícita. Exige mudar o painel junto.
+2. **`noShowCount` deveria ter recorte de período**, como os outros três
+   contadores. Muda um número que o dono vê todo dia.
+3. **Remover `POST /auth/register`**, que nada usa.
+4. **Coluna de posição em `appointment_services`.** Hoje nem o Node nem o Java
+   têm ordem garantida dos serviços de um agendamento; o Java ordena por
+   duração decrescente para ser determinístico e, de quebra, bater com a ordem
+   de inserção do Node no caso comum ("Corte + Barba"). Uma coluna de posição
+   resolveria de verdade — exige migration no schema compartilhado.
+5. **Aplicar a V2 em produção**, junto com a remoção do `prisma db push`.
+6. **Token CSRF por sessão**, já que `SameSite=None` em produção deixa a defesa
+   inteiramente no CORS.
 
 ---
 

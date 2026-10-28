@@ -69,6 +69,15 @@ app:
   cors:
     allowed-origins: ${CORS_ORIGIN}
 
+  cookies:
+    # Espelha o `NODE_ENV === 'production'` do Node: decide secure,
+    # sameSite e a presenca do domain. Ver security/CookieFactory.
+    producao: false
+    # So tem efeito com producao: true. O ponto na frente nao e detalhe --
+    # sem ele o Safari do iPhone descarta o cookie e o painel nao loga no
+    # celular.
+    dominio: ${COOKIE_DOMAIN:}
+
 ---
 # ===========================================================================
 # dev
@@ -155,3 +164,10 @@ logging:
 app:
   cors:
     allowed-origins: ${CORS_ORIGIN}
+
+  cookies:
+    # secure=true, sameSite=None e o domain com ponto. As tres andam juntas:
+    # sameSite=None exige secure, e sem o domain o Safari do iPhone descarta
+    # o cookie.
+    producao: true
+    dominio: ${COOKIE_DOMAIN:.barbeariajhonatan.com}
