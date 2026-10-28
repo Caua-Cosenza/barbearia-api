@@ -166,7 +166,9 @@ src/main/resources/
 
 src/test/java/com/cauacosenza/barbearia/
 ├── domain/rules/               testes unitários das regras puras (sem Spring)
-└── integration/                testes de ponta a ponta com Testcontainers
+├── security/                   testes do CryptoService (sem Spring)
+├── service/                    testes do mapper (sem Spring, sem banco)
+└── integration/                testes contra Postgres real (Testcontainers)
 ```
 
 ### A regra do pacote `domain/rules`
@@ -192,7 +194,175 @@ A restrição vale para o projeto inteiro, não só para a fase atual.
   perde primeiro.
 -->
 
-*A ser preenchido nas próximas fases.*
+### PII cifrada por `AttributeConverter` — e o que isso custa
+
+As colunas `*_encrypted` guardam AES-256-CBC no formato do backend Node
+(`hex(iv):hex(ciphertext)`). Em vez de cifrar e decifrar à mão em cada serviço,
+`security/EncryptedStringConverter` fica no caminho entre a entity e a coluna:
+a entity tem um `String` em texto claro e o banco nunca vê o texto claro.
+
+O converter é um bean Spring e recebe o `CryptoService` por construtor. Isso
+funciona porque o Spring Boot registra o `SpringBeanContainer` como
+`hibernate.resource.beans.container`, então o Hibernate pede a instância ao
+container do Spring em vez de instanciar a classe por conta própria — sem
+`ApplicationContextAware` e sem holder estático. Se o wiring quebrar, quebra no
+boot.
+
+Nulo atravessa sem passar pelo `CryptoService`, porque o `decrypt(null)` da
+Fase 2 lança `CryptoException` de propósito e as colunas `guest_*_encrypted`
+são NULLABLE. String vazia **não** é nulo: é cifrada normalmente.
+
+**A consequência, que é direta e não tem como contornar:** o IV é novo a cada
+gravação, então o mesmo nome produz bytes diferentes toda vez. **Não existe
+`WHERE`, `LIKE` nem `ORDER BY` em coluna cifrada.** Buscar ou ordenar por PII
+exige carregar as linhas e decifrar em memória. Na prática não incomoda — o
+sistema não procura cliente por nome, e `users.email`, que é a credencial de
+login e precisa de índice único, foi deixado em texto claro justamente por
+isso. Mas é escolha, não acidente: cifrar o e-mail quebraria o login.
+
+### A duração do atendimento é materializada em `slot_duration_minutes`
+
+Uma constraint de exclusão precisa de expressão **imutável** sobre a própria
+linha. A duração efetiva do atendimento é a soma de `appointment_services`, em
+outra tabela — uma subconsulta não é imutável e não entra no índice. Daí a
+coluna `slot_duration_minutes`, que a V2 acrescentou a `appointments`.
+
+A regra é uma só, aplicada em três lugares que têm de concordar: soma das
+durações dos itens, **teto de 50 minutos**, **fallback de 30** quando não há
+item nenhum (agendamentos anteriores à tabela `appointment_services`). Os três
+lugares são o backfill da V2, o `SlotQueryMapper.slotDurationMinutes` na
+leitura, e o preenchimento da coluna na escrita. Se divergirem, a tela oferece
+um horário que a constraint vai recusar no commit — erro aparentemente
+aleatório na reserva, o pior tipo de inconsistência.
+
+### V2: a garantia contra duplo agendamento está no schema, não no código
+
+Verificar conflito antes de inserir deixa uma janela entre a checagem e o
+insert, e é o que o backend Node faz hoje. Fechar a janela no código exigiria
+lock pessimista por profissional em toda reserva, serializando a operação mais
+frequente do sistema. O Postgres resolve na definição do schema:
+
+```sql
+EXCLUDE USING gist (
+  professional_id WITH =,
+  tsrange(scheduled_at, scheduled_at + make_interval(mins => slot_duration_minutes)) WITH &&
+) WHERE (status IN ('PENDING','CONFIRMED'))
+```
+
+Detalhes que foram escolhidos e não herdados:
+
+- **`tsrange`, não `tstzrange`** — `scheduled_at` é `TIMESTAMP(3)` *sem* fuso.
+  Passar um timestamp sem fuso para `tstzrange()` forçaria conversão pelo
+  `TimeZone` da sessão, que depende do cliente: não é imutável e o Postgres
+  recusa a expressão no índice.
+- **`make_interval(mins => ...)`, não `(coluna || ' minutes')::interval`** — o
+  cast de texto para interval depende de `IntervalStyle`; `make_interval` é
+  imutável por construção.
+- **O range é `[início, fim)`** — por isso agendamentos encostados (um termina
+  10:50, o outro começa 10:50) não conflitam. Sem isso a grade de 50 em 50 que
+  o `SlotCalculator` gera não caberia no próprio dia.
+- **`WHERE` parcial** — cancelado, concluído e no-show saem do índice e o
+  horário volta a ser vendável. É o mesmo conjunto de
+  `AppointmentStatus.ocupaAgenda()` e do filtro de
+  `AppointmentRepository.buscarQueOcupamAgenda`.
+
+#### ⚠️ A V2 **não** foi aplicada em produção
+
+Dois motivos, nenhum deles opcional:
+
+1. Ela altera um banco que o Node usa **agora**. `slot_duration_minutes` entra
+   `NOT NULL` sem default, e todo `INSERT` do Prisma passaria a falhar — o
+   Prisma não conhece a coluna.
+2. O start script do Node roda `prisma db push`, que sincroniza o banco com o
+   `schema.prisma`. Como o Prisma não conhece nem a coluna nem a constraint, o
+   próximo deploy do Node as removeria em silêncio.
+
+Aplicar a V2 em produção é parte do **plano de corte**, junto com a remoção
+daquele `db push`. Até lá ela vive no ambiente de teste, onde é o que prova que
+a garantia funciona. O backfill rodou sem encontrar nenhuma sobreposição
+preexistente no banco de teste.
+
+### O perdedor da corrida perde de duas formas — a Fase 5 precisa tratar as duas
+
+Com duas threads disputando o mesmo horário a partir de um `CountDownLatch`
+comum, exatamente uma vence. Mas o perdedor recebe **uma de duas exceções**, e
+qual delas depende de escalonamento:
+
+| Situação | Exceção |
+| --- | --- |
+| O vencedor **já comitou** quando o perdedor chega ao índice | `DataIntegrityViolationException`, citando `appointments_sem_sobreposicao` |
+| As duas transações chegam ao índice **ainda abertas** | `CannotAcquireLockException` — *"deadlock detected ... while checking exclusion constraint"* |
+
+O segundo caso é comportamento normal do Postgres e não um defeito: ao
+encontrar uma tupla não comitada que conflita, a checagem da constraint de
+exclusão **espera** pela transação concorrente, porque não há como saber se
+aquela linha vai existir. As duas esperam uma pela outra e o detector de
+deadlock mata uma.
+
+Nos dois caminhos o resultado observável é o mesmo e é o que importa: **uma
+linha no banco, nenhum duplo agendamento**. Mas a camada de serviço da Fase 5
+**não pode tratar apenas `DataIntegrityViolationException`** — um deadlock
+vazaria como erro 500 em vez de "esse horário acabou de ser ocupado". Essa
+variante só apareceu depois de repetir o teste 20 vezes; na primeira execução
+isolada ela não acontece.
+
+### Mapeamentos que o `ddl-auto: validate` cobra
+
+O schema é do Node e intocável, então as entities se adaptam. Quatro pontos em
+que o padrão do Hibernate não serve:
+
+- **`professional_availability` tem colunas em camelCase** (`"dayOfWeek"`,
+  `"startTime"`, `"endTime"`), porque esses campos nunca foram mapeados no
+  `schema.prisma`. Exigem `@Column(name = "\"dayOfWeek\"")` com aspas
+  escapadas: sem elas o Hibernate gera `dayofweek` e a coluna não é
+  encontrada. Contraste com `blocked_slots`, que usa `start_time`/`end_time` em
+  snake_case — a inconsistência está em produção e não pode ser corrigida.
+- **`id` é TEXT, não `uuid`** — `String` com `@GeneratedValue(strategy = UUID)`,
+  o UUID gerado na aplicação, como o Prisma faz.
+- **Horas e datas são TEXT** (`"HH:MM"`, `"YYYY-MM-DD"`), não `TIME`/`DATE`.
+  Ficam `String` na entity; a conversão para `LocalTime`/`LocalDate` é do
+  `SlotQueryMapper`. Mapear como `LocalTime` faria o `validate` exigir uma
+  coluna `time`.
+- **`TIMESTAMP(3)` sem fuso guardando UTC** — `Instant` com
+  `@JdbcTypeCode(SqlTypes.TIMESTAMP)`, somado ao
+  `hibernate.jdbc.time_zone: UTC`. Sem forçar o código JDBC, o Hibernate
+  recomenda `TIMESTAMP_UTC` para `Instant`, pediria `timestamptz` e o
+  `validate` reprovaria.
+
+### Enum do Postgres: literal em JPQL não funciona neste banco
+
+Os tipos `"AppointmentStatus"` e `"Role"` foram criados pelo Prisma em
+camelCase, com aspas. As entities usam
+`@Enumerated(STRING) + @JdbcTypeCode(SqlTypes.NAMED_ENUM)`, que envia o valor
+como tipo desconhecido e deixa o Postgres resolver pela coluna.
+
+O que **não** funciona é citar o enum como literal em JPQL. Escrever
+`where a.status in (AppointmentStatus.PENDING, ...)` parece mais direto, mas o
+Hibernate inlina como `'PENDING'::AppointmentStatus` — **sem aspas no nome do
+tipo** — e o Postgres rebaixa para `appointmentstatus`, que não existe:
+
+```
+ERROR: type "appointmentstatus" does not exist
+```
+
+Por isso os status vão **por parâmetro** (`in :statuses`), com o conjunto
+`OCUPAM_AGENDA` injetado por um `default method` do repositório. O binder de
+`NAMED_ENUM` não cita o nome do tipo em lugar algum, e a regra de negócio
+continua dentro do repositório, fora do alcance de quem chama.
+
+### Os testes de integração não são `@DataJpaTest`
+
+`@DataJpaTest` envolve cada teste em uma transação com rollback. Uma constraint
+de exclusão é verificada **no commit**, e uma condição de corrida entre threads
+exige commits reais em conexões distintas — nenhum dos dois cabe dentro de uma
+transação de teste. Os testes herdam de `AbstractPostgresIntegrationTest`, que
+sobe o contexto inteiro (o que também faz o `ddl-auto: validate` rodar de graça
+em cada classe), não é `@Transactional`, e limpa as tabelas com
+`TRUNCATE ... CASCADE` antes de cada teste.
+
+As anotações são idênticas em todas as subclasses de propósito: o Spring
+cacheia o contexto por conjunto de anotações, então os containers de Postgres e
+Redis sobem uma vez para a suíte toda.
 
 ---
 
