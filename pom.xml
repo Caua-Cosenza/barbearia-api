@@ -20,6 +20,11 @@
 		<jjwt.version>0.13.0</jjwt.version>
 		<bucket4j.version>8.10.1</bucket4j.version>
 		<jacoco.version>0.8.15</jacoco.version>
+		<pitest.version>1.30.1</pitest.version>
+		<pitest.junit5.version>1.2.3</pitest.junit5.version>
+		<!-- DEFAULTS ou STRONGER; sobrescreva com -Dpitest.mutators=STRONGER. -->
+		<pitest.mutators>DEFAULTS</pitest.mutators>
+		<pitest.threads>16</pitest.threads>
 	</properties>
 
 	<dependencies>
@@ -193,6 +198,95 @@
 					</execution>
 				</executions>
 			</plugin>
+			<!--
+				Mutation testing com o PIT.
+
+				NAO roda no `verify`: o plugin nao e ligado a nenhuma fase do
+				ciclo de vida, e so e executado quando invocado de proposito
+				(`./mvnw pitest:mutationCoverage`). Mutation testing custa
+				ordens de grandeza mais do que a suite normal.
+
+				COMPATIBILIDADE: pitest-junit5-plugin 1.2.3 e compilado contra
+				o JUnit Platform 1.9.2, e este projeto usa o 6.0.3 (Spring
+				Boot 4 / JUnit 6). A combinacao foi verificada na pratica
+				antes de ser fixada aqui, e funciona com pitest 1.30.1: o
+				relato de "0% de cobertura" do issue #113 do plugin e de uma
+				versao bem anterior do pitest (1.22.1).
+			-->
+			<plugin>
+				<groupId>org.pitest</groupId>
+				<artifactId>pitest-maven</artifactId>
+				<version>${pitest.version}</version>
+				<dependencies>
+					<dependency>
+						<groupId>org.pitest</groupId>
+						<artifactId>pitest-junit5-plugin</artifactId>
+						<version>${pitest.junit5.version}</version>
+					</dependency>
+				</dependencies>
+				<configuration>
+					<!--
+						Escopo deliberado. Mutante em classe de configuracao
+						ou em DTO e ruido: nao ha logica para quebrar, e o
+						score cai por causa de getters que nenhum teste
+						chama diretamente.
+					-->
+					<targetClasses>
+						<param>com.cauacosenza.barbearia.domain.*</param>
+						<param>com.cauacosenza.barbearia.security.*</param>
+						<param>com.cauacosenza.barbearia.service.*</param>
+					</targetClasses>
+					<excludedClasses>
+						<!-- Entities: getters/setters do Lombok e callbacks de JPA. -->
+						<param>com.cauacosenza.barbearia.domain.entity.*</param>
+						<!-- Eventos de dominio: records, so transportam dado. -->
+						<param>com.cauacosenza.barbearia.domain.event.*</param>
+						<!-- Excecoes: mensagem e status, sem logica. -->
+						<param>com.cauacosenza.barbearia.domain.exception.*</param>
+						<!-- Codigo gerado e classes sinteticas. -->
+						<param>*$*Builder</param>
+						<param>*_$$_*</param>
+					</excludedClasses>
+
+					<!--
+						Quais testes o PIT usa para matar os mutantes. O
+						default inclui TUDO: e o numero honesto, e leva horas,
+						porque cada minion do PIT sobe o contexto do Spring e
+						os containers do Testcontainers.
+
+						Para a medicao rapida existe o perfil
+						`pitest-rapido`, no fim deste arquivo.
+
+						CUIDADO: cada `param` e um glob INTEIRO. Varios
+						padroes exigem varios `param`. Uma lista separada por
+						virgula dentro de um unico `param` vira um glob
+						literal que nao casa com nada, e o PIT reporta
+						"0 tests examined" com 100% de NO_COVERAGE: facil de
+						confundir com incompatibilidade de versao.
+					-->
+					<targetTests>
+						<param>com.cauacosenza.barbearia.*</param>
+					</targetTests>
+
+					<threads>${pitest.threads}</threads>
+					<mutators>
+						<param>${pitest.mutators}</param>
+					</mutators>
+					<outputFormats>
+						<param>XML</param>
+						<param>HTML</param>
+					</outputFormats>
+					<!--
+						Sem limite de score: esta configuracao MEDE, nao
+						reprova o build. Transformar mutation score em
+						criterio de falha antes de saber onde estao os
+						buracos faria o time perseguir o numero em vez do
+						problema.
+					-->
+					<failWhenNoMutations>false</failWhenNoMutations>
+					<timestampedReports>false</timestampedReports>
+				</configuration>
+			</plugin>
 			<plugin>
 				<groupId>org.jacoco</groupId>
 				<artifactId>jacoco-maven-plugin</artifactId>
@@ -215,5 +309,44 @@
 			</plugin>
 		</plugins>
 	</build>
+
+	<profiles>
+		<!--
+			Mutation testing rapido: so os testes PUROS, sem Spring e sem
+			Testcontainers.
+
+				./mvnw -Ppitest-rapido pitest:mutationCoverage
+
+			Roda em segundos em vez de horas. O preco e que tudo que so e
+			coberto por teste de integracao aparece como NO_COVERAGE, e NAO
+			como SURVIVED: sao coisas diferentes (ninguem testou vs. o teste
+			nao percebeu) e nao devem ser somadas na leitura do relatorio.
+
+			Vale para medir o que importa mais: SlotCalculator, CryptoService,
+			JwtService, CookieFactory, SlotQueryMapper e MensagensDeWhatsApp
+			tem teste puro e aparecem com numero confiavel aqui.
+		-->
+		<profile>
+			<id>pitest-rapido</id>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.pitest</groupId>
+						<artifactId>pitest-maven</artifactId>
+						<configuration>
+							<targetTests>
+								<param>com.cauacosenza.barbearia.domain.rules.*</param>
+								<param>com.cauacosenza.barbearia.security.*</param>
+								<param>com.cauacosenza.barbearia.service.*</param>
+								<param>com.cauacosenza.barbearia.integration.EvolutionApiClientTest</param>
+								<param>com.cauacosenza.barbearia.integration.LogsNaoVazamPiiTest</param>
+								<param>com.cauacosenza.barbearia.integration.EquivalenciaComONodeTest</param>
+							</targetTests>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+	</profiles>
 
 </project>
