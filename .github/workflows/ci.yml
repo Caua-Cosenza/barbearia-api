@@ -1,0 +1,88 @@
+# ===========================================================================
+# CI — build e suite completa a cada push e pull request.
+#
+# PRINCIPIO: o build tem que passar para QUALQUER PESSOA que clonar o
+# repositorio, sem nenhum secret configurado. Num projeto de portfolio, um CI
+# que exige credencial e um CI vermelho para todo mundo que olha.
+#
+# Isso e possivel porque:
+#   - o EnvironmentValidator e @Profile("!test"), e os testes rodam no perfil
+#     test. Nenhuma variavel obrigatoria e cobrada;
+#   - Postgres e Redis sobem via Testcontainers, nao como services do Actions.
+#     O runner ubuntu-latest tem Docker, e e o proprio teste que decide a
+#     imagem — a mesma do docker-compose, postgres:18-alpine;
+#   - os segredos de teste (chave de criptografia, segredos de JWT) sao
+#     FICTICIOS e vivem em codigo de teste, em SegredosDeTeste;
+#   - a Evolution API nao e configurada, entao o NoOpChatMessageAdapter assume
+#     e nenhum teste toca a rede externa.
+# ===========================================================================
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  # Permite rodar a mao pela aba Actions, util para checar o cache.
+  workflow_dispatch:
+
+# Um push novo na mesma branch cancela o build anterior: sem isso, uma
+# sequencia de commits enfileira builds que ninguem vai ler.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build e testes
+    # ubuntu-latest de proposito: tem Docker, que o Testcontainers precisa.
+    # Em macos-latest e windows-latest o runner nao tem daemon de Docker e
+    # toda a suite de integracao falharia.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          # O cache do proprio setup-java cobre o ~/.m2/repository e e
+          # invalidado pelo hash do pom.xml. Mais simples e mais confiavel que
+          # um actions/cache escrito a mao.
+          cache: 'maven'
+
+      - name: Build e suite completa
+        # -B (batch) tira a barra de progresso, que no log do Actions viraria
+        # milhares de linhas de lixo.
+        # -ntp esconde o download de cada dependencia, pelo mesmo motivo.
+        # verify e nao test: inclui o relatorio do JaCoCo, que roda na fase
+        # verify.
+        run: ./mvnw -B -ntp verify
+
+      - name: Relatório do JaCoCo
+        # Sobe mesmo se os testes falharem: quando o build quebra e
+        # justamente quando se quer ver o que foi coberto.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+          retention-days: 14
+          # O relatorio nao existe se o build morreu antes da fase verify.
+          # Sem isto, o passo falharia e esconderia o erro de verdade.
+          if-no-files-found: ignore
+
+      - name: Relatórios do Surefire
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          retention-days: 14
+          if-no-files-found: ignore

@@ -11,6 +11,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
@@ -22,6 +23,7 @@ import com.cauacosenza.barbearia.domain.entity.BarberSchedule;
 import com.cauacosenza.barbearia.domain.entity.BookedService;
 import com.cauacosenza.barbearia.domain.entity.ScheduleBlock;
 import com.cauacosenza.barbearia.domain.enums.AppointmentStatus;
+import com.cauacosenza.barbearia.domain.event.AgendamentoCriado;
 import com.cauacosenza.barbearia.domain.exception.AgendamentoNoPassadoException;
 import com.cauacosenza.barbearia.domain.exception.ForaDoExpedienteException;
 import com.cauacosenza.barbearia.domain.exception.HorarioReservadoException;
@@ -102,10 +104,18 @@ public class PublicAppointmentService {
 
 	private final Clock clock;
 
+	/**
+	 * Publica {@link AgendamentoCriado} para o
+	 * {@code NotificacaoDeAgendamentoListener}, que envia o WhatsApp
+	 * <b>depois do commit</b>. Ver o javadoc do listener para o porque.
+	 */
+	private final ApplicationEventPublisher eventos;
+
 	public PublicAppointmentService(BarberRepository barbers,
 			com.cauacosenza.barbearia.repository.ServiceRepository services,
 			BarberScheduleRepository schedules, ScheduleBlockRepository blocks,
-			AppointmentRepository appointments, SlotQueryMapper mapper, Clock clock) {
+			AppointmentRepository appointments, SlotQueryMapper mapper, Clock clock,
+			ApplicationEventPublisher eventos) {
 		this.barbers = barbers;
 		this.services = services;
 		this.schedules = schedules;
@@ -113,6 +123,7 @@ public class PublicAppointmentService {
 		this.appointments = appointments;
 		this.mapper = mapper;
 		this.clock = clock;
+		this.eventos = eventos;
 	}
 
 	@Transactional
@@ -165,7 +176,24 @@ public class PublicAppointmentService {
 		Appointment agendamento = montar(pedido, barbeiro, escolhidos, quando,
 				totalAmountCents, duracaoDoSlot);
 
-		return responder(gravar(agendamento), totalAmountCents, duracaoBruta);
+		Appointment gravado = gravar(agendamento);
+
+		// O envio do WhatsApp NAO acontece aqui. O evento e entregue depois do
+		// commit, e por isso nenhuma lentidao da Evolution segura a conexao
+		// com o banco -- nem se manda "agendamento confirmado" de um
+		// agendamento que a constraint de exclusao acabou de recusar.
+		this.eventos.publishEvent(new AgendamentoCriado(
+				gravado.getId(),
+				pedido.guestName(),
+				pedido.guestPhone(),
+				gravado.getScheduledAt(),
+				escolhidos.stream()
+						.map(com.cauacosenza.barbearia.domain.entity.Service::getName)
+						.toList(),
+				totalAmountCents,
+				gravado.getCancelToken()));
+
+		return responder(gravado, totalAmountCents, duracaoBruta);
 	}
 
 	/**

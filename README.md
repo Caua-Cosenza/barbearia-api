@@ -1,5 +1,7 @@
 # Barbearia API
 
+[![CI](https://github.com/Caua-Cosenza/barbearia-api/actions/workflows/ci.yml/badge.svg)](https://github.com/Caua-Cosenza/barbearia-api/actions/workflows/ci.yml)
+
 Backend de agendamento da **Barbearia Jhonatan Correa**, escrito em Java com
 Spring Boot.
 
@@ -292,6 +294,7 @@ src/main/java/com/cauacosenza/barbearia/
 ├── integration/                clientes HTTP externos (Evolution API)
 ├── validation/                 constraints de Bean Validation próprias
 ├── security/                   JWT, cookies, filtro de autenticação, cifra de PII
+├── domain/event/               eventos de domínio (notificação após commit)
 ├── config/                     security, CORS, Redis, rate limit, validação de ambiente
 └── exception/                  tratamento global de erro → envelope de erro
 
@@ -546,6 +549,14 @@ controllers do Node:
 | agendar no passado → 400 | **422**: o `.refine` do Zod roda antes do service e sombreia o `if` dele. A mesma assimetria foi reproduzida — ver `AgendamentoNoPassadoException` |
 | push subscription seria rota pública | é `POST /api/v1/admin/push-subscription`, atrás de autenticação — Fase 6 |
 
+E as da Fase 7:
+
+| O que se supunha | O que o código diz |
+| --- | --- |
+| duas mensagens no fluxo vivo | são **três**: confirmação ao cliente, aviso de novo agendamento ao barbeiro, e **aviso de cancelamento ao barbeiro** (de `routes/cancel.ts`) |
+| NoOp quando falta `EVOLUTION_API_URL` | o Node checa **as três** variáveis: URL, API key e instância |
+| o Node resolve a resiliência com try/catch | `try/catch` em volta do `fetch` **mais** promessa solta (`void`, sem `await`) depois de a transação fechar |
+
 E as da Fase 6:
 
 | O que se supunha | O que o código diz |
@@ -736,6 +747,106 @@ Uma correção saiu dessa comparação: os erros de validação de **parâmetro*
 (`date: date must be YYYY-MM-DD format`), como o `ZodError` monta
 `${path}: ${message}`.
 
+### WhatsApp: a porta, o adaptador, e o NoOp
+
+`service/ChatMessagePort` é a interface que o fluxo de agendamento usa — e
+**não tem uma palavra sobre Evolution, HTTP ou JSON**. Quem usa define o
+contrato; quem implementa se adapta. O ganho é concreto: o teste de
+resiliência (abaixo) roda contra Postgres de verdade sem nenhuma linha de rede
+no caminho, e trocar a Evolution pela API oficial da Meta um dia não encosta no
+serviço de agendamento.
+
+`integration/EvolutionApiClient` fala HTTP. `integration/NoOpChatMessageAdapter`
+não faz nada, e assume quando **qualquer uma** das três variáveis falta —
+`EVOLUTION_API_URL`, `EVOLUTION_API_KEY`, `EVOLUTION_INSTANCE_NAME`. É o que
+permite clonar o repositório e rodar o sistema sem credencial de serviço de
+terceiro. A decisão é tomada uma vez no boot, não a cada mensagem.
+
+**Compor o texto é regra de negócio, não transporte.** Fica em
+`service/MensagensDeWhatsApp`, código puro: o cliente final lê aquilo, cada
+emoji e cada quebra de linha foram escolhidos pelo dono. Se morasse no
+adaptador HTTP, mudar a redação exigiria mexer no cliente de rede e testá-la
+exigiria subir um servidor.
+
+**Timeouts explícitos:** 3s para conexão, 5s para leitura. O default do
+`HttpClient` do JDK é **infinito** para leitura — e como o envio acontece
+depois do commit, seriam threads do Tomcat acumulando sem que nenhuma transação
+travasse. Sintoma difícil de ler: o banco está bem, o site não responde.
+
+### Resiliência: evento após commit, não try/catch
+
+**O Node:** chama `void whatsappService.sendWelcomeMessage(...)` — promessa
+solta, sem `await` — depois de a transação do Prisma ter fechado, com
+`try/catch` em volta do `fetch`. Funciona, e tem dois problemas: um `throw`
+fora do `try` viraria *unhandled rejection*, e a ordem entre commit e envio é
+consequência de como o código foi escrito, não uma regra.
+
+**Aqui** a regra é explícita: `@TransactionalEventListener(AFTER_COMMIT)`. O
+ouvinte só é chamado se a transação **comitou**. Isso dá três coisas:
+
+1. **A conexão com o banco já voltou ao pool** antes de qualquer tentativa de
+   rede. Com pool de 10, dez clientes agendando durante uma instabilidade da
+   Evolution travariam o site inteiro se o envio fosse dentro da transação.
+2. **Nunca se manda mensagem de um agendamento que o banco recusou.** O
+   perdedor de uma disputa por horário (a constraint de exclusão da V2) não
+   recebe "seu agendamento foi confirmado". Há teste para isso.
+3. O cliente não espera o WhatsApp para ver a tela de confirmação.
+
+Divergência deliberada. O comportamento observável é o mesmo: a mensagem
+chega.
+
+`confirmation_sent` e `confirmation_sent_at` — que sobraram do job de lembrete
+desativado — passam a registrar **quem foi avisado**, e portanto quem ficou
+sem, para reenvio manual depois de uma instabilidade.
+
+### O reminder NÃO foi portado
+
+O cron de lembrete 1h30 antes (`jobs/reminderJob.ts`) foi desativado em
+produção por decisão do cliente, e está comentado no `index.ts` do Node. As
+colunas continuam no banco, com o novo uso acima. **O job não existe mais e
+não foi recriado.**
+
+### Segurança nos logs
+
+Este projeto já teve um incidente de log vazando conteúdo de conversa de
+WhatsApp.
+
+| Nunca | Pode |
+| --- | --- |
+| o corpo da mensagem | o id do agendamento |
+| o telefone completo | sucesso ou falha |
+| a resposta bruta da Evolution | o código de status HTTP |
+| a `EVOLUTION_API_KEY`, nem truncada | o telefone mascarado: `5522****8402` |
+
+Dois detalhes que não são óbvios e estão no código: o `catch` loga
+`ex.getClass().getSimpleName()` e **não** `ex.getMessage()`, porque a mensagem
+de uma exceção de HTTP traz a URL e a URL traz o nome da instância; e a
+exceção não vai como `cause`, porque o stack trace imprimiria os dois.
+
+`LogsNaoVazamPiiTest` anexa um `ListAppender` do Logback aos loggers das duas
+classes, exercita os quatro caminhos que escrevem log (sucesso, recusa, falha
+de rede, NoOp) e procura por chave, telefone completo, corpo da mensagem e
+resposta bruta — mais uma varredura por qualquer sequência de 11+ dígitos. Uma
+regra em comentário não sobrevive ao próximo `log.debug` acrescentado às
+pressas.
+
+### CI sem nenhum secret
+
+`.github/workflows/ci.yml` roda em push e pull request: `ubuntu-latest` (tem
+Docker, que o Testcontainers precisa), Java 21 Temurin, cache do Maven,
+`./mvnw -B -ntp verify`, e o relatório do JaCoCo como artefato.
+
+**O build passa para qualquer pessoa que clonar o repositório, sem configurar
+nada.** Num projeto de portfólio, um CI que exige credencial é um CI vermelho
+para todo mundo que olha. Isso funciona porque o `EnvironmentValidator` é
+`@Profile("!test")` e os testes rodam no perfil `test`; Postgres e Redis sobem
+por Testcontainers e não como *services* do Actions; os segredos de teste são
+fictícios e vivem em `SegredosDeTeste`; e a Evolution não é configurada, então
+o NoOp assume e nenhum teste toca a rede externa.
+
+Verificado localmente com `clean verify` e **todas** as variáveis de ambiente
+removidas (`env -u ...`): 487 testes, verde.
+
 ### Trabalho futuro
 
 Itens que esta fase deliberadamente **não** resolveu, para não quebrar o
@@ -754,6 +865,11 @@ frontend em produção:
 5. **Aplicar a V2 em produção**, junto com a remoção do `prisma db push`.
 6. **Token CSRF por sessão**, já que `SameSite=None` em produção deixa a defesa
    inteiramente no CORS.
+7. **Reenvio manual de WhatsApp** a partir de `confirmation_sent = false`.
+   Hoje a coluna registra quem ficou sem aviso, mas não há rota que reenvie.
+8. **Retry com backoff no envio.** Hoje uma falha é definitiva até alguém
+   reenviar à mão. Uma fila com tentativas espaçadas cobriria a instabilidade
+   curta da Evolution, que é o caso comum.
 
 ---
 

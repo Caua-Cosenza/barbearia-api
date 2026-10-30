@@ -5,12 +5,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.cauacosenza.barbearia.domain.entity.Appointment;
 import com.cauacosenza.barbearia.domain.entity.BookedService;
 import com.cauacosenza.barbearia.domain.enums.AppointmentStatus;
+import com.cauacosenza.barbearia.domain.event.AgendamentoCancelado;
 import com.cauacosenza.barbearia.domain.exception.PrazoCancelamentoException;
 import com.cauacosenza.barbearia.domain.exception.RecursoNaoEncontradoException;
 import com.cauacosenza.barbearia.dto.response.CancelPageResponse;
@@ -56,9 +58,14 @@ public class CancelService {
 
 	private final Clock clock;
 
-	public CancelService(AppointmentRepository appointments, Clock clock) {
+	/** Publica {@link AgendamentoCancelado} para avisar o barbeiro. */
+	private final ApplicationEventPublisher eventos;
+
+	public CancelService(AppointmentRepository appointments, Clock clock,
+			ApplicationEventPublisher eventos) {
 		this.appointments = appointments;
 		this.clock = clock;
+		this.eventos = eventos;
 	}
 
 	/** Os dados da tela de cancelamento. */
@@ -90,6 +97,7 @@ public class CancelService {
 	@Transactional
 	public void cancelar(String token) {
 		Appointment agendamento = buscar(token);
+		List<BookedService> itens = agendamento.getBookedServices();
 
 		if (!agendamento.getStatus().ocupaAgenda()) {
 			throw PrazoCancelamentoException.statusNaoCancelavel();
@@ -101,6 +109,15 @@ public class CancelService {
 		agendamento.setStatus(AppointmentStatus.CANCELLED);
 		agendamento.setCancelledAt(Instant.now(this.clock));
 		this.appointments.saveAndFlush(agendamento);
+
+		// Os nomes dos servicos sao lidos AGORA, dentro da transacao: o
+		// ouvinte roda depois do commit, com a sessao do Hibernate ja fechada,
+		// e tocar a colecao la levantaria LazyInitializationException.
+		this.eventos.publishEvent(new AgendamentoCancelado(
+				agendamento.getId(),
+				(agendamento.getGuestName() != null) ? agendamento.getGuestName() : "",
+				agendamento.getScheduledAt(),
+				itens.stream().map(item -> item.getService().getName()).toList()));
 		// O horario volta a ser vendavel sozinho: o WHERE parcial da constraint
 		// de exclusao so enxerga PENDING e CONFIRMED, entao a linha sai do
 		// indice no mesmo UPDATE. Nao ha nada a limpar.
