@@ -393,23 +393,48 @@
 
 				./mvnw -Ppitest-completo pitest:mutationCoverage
 
-			LEIA ANTES DE RODAR. Cada minion do PIT e uma JVM nova que sobe
-			contexto do Spring e, sem reuso de container, o seu proprio par
-			Postgres+Redis. Com `pitest.threads=16` sao 16 pares simultaneos:
-			a maquina entra em thrashing, timeout vira resultado de mutante e
-			sobram containers orfaos. Por isso `threads` aqui e 2, e nao o
-			valor global.
+			EXIGE `-Dpitest.threads=1`:
 
-			E O REUSO NAO RESOLVE SOZINHO, ainda. Com
-			`testcontainers.reuse.enable=true` as JVMs passam a dividir UM
-			Redis, e as chaves de rate limit tem uma hora de TTL enquanto a
-			janela do balde e de um minuto. Como o contador de
-			`RequisicaoDaBorda` reinicia em 1 a cada JVM, duas JVMs
-			concorrentes pedem o MESMO endereco e disputam o MESMO balde: a
-			segunda recebe 429 no primeiro pedido e falha por um motivo que
-			nada tem a ver com o mutante. Isso foi reproduzido, nao e
-			hipotese. Enquanto a chave de teste nao tiver um prefixo proprio
-			por JVM, este perfil so e confiavel com `threads` em 1.
+				./mvnw -Ppitest-completo -Dpitest.threads=1 pitest:mutationCoverage
+
+			POR QUE. Com mais de uma thread os minions compartilham o MESMO
+			Postgres reusado, e o `@BeforeEach` de
+			`AbstractPostgresIntegrationTest` da TRUNCATE nas tabelas. O
+			TRUNCATE de um minion apaga os dados do outro no meio do teste, o
+			teste do outro falha por contaminacao, e o PIT registra "mutante
+			morto". Sao MORTES ESPURIAS, e elas INFLAM o score — o oposto de
+			um falso negativo, e bem mais perigoso, porque parece boa noticia.
+
+			Medido, nao suposto: com `threads=2` esta configuracao reportou
+			288 mutantes, 275 mortos, score 95% e test strength 99%, e no meio
+			disso deu como mortos os DOIS mutantes equivalentes de
+			`PublicAppointmentService` — inclusive o da linha 278, que nao
+			pode ser morto (ver o controle negativo abaixo). Com `threads=1`
+			os mesmos equivalentes voltam a aparecer como sobreviventes.
+
+			CONTROLE NEGATIVO PERMANENTE. O mutante de
+			`PublicAppointmentService` linha 278 remove
+			`setStatus(AppointmentStatus.PENDING)`, e o campo ja nasce PENDING
+			em `Appointment.java:110`. Nenhum teste e capaz de distinguir as
+			duas versoes, hoje ou algum dia: ele e equivalente por
+			construcao. Se ele aparecer como MORTO em qualquer relatorio, a
+			rodada esta contaminada e o numero nao vale — e o canario desta
+			medicao. O outro equivalente conhecido e a linha 135, a guarda de
+			data no passado, inalcancavel por HTTP.
+
+			E NAO HABILITAR `junit.jupiter.execution.parallel.enabled`, pelo
+			mesmo motivo: threads do JUnit dentro de uma JVM so dividem o
+			mesmo Postgres tanto quanto minions de JVMs diferentes. O caminho
+			para qualquer paralelismo aqui passa por isolar o SCHEMA do
+			Postgres por JVM, como ja foi feito com a chave do Redis — o
+			`RequisicaoDaBorda` sorteia um prefixo de endereco por processo, e
+			foi isso que tirou o Redis desta lista.
+
+			Cada minion ainda e uma JVM que sobe contexto do Spring, entao sem
+			`testcontainers.reuse.enable=true` cada uma sobe tambem o seu
+			proprio par Postgres+Redis: com o `pitest.threads=16` global, 16
+			pares simultaneos levam a maquina a thrashing, timeout vira
+			resultado de mutante e sobram containers orfaos.
 		-->
 		<profile>
 			<id>pitest-completo</id>
@@ -446,11 +471,11 @@
 
 				./mvnw -Ppitest-concorrencia pitest:mutationCoverage
 
-			Existe porque o `pitest-completo` nao e viavel enquanto cada
-			minion subir o seu proprio par de containers, e porque a duvida
-			que motivou a medicao e sobre UMA classe. Sao 48 mutantes em vez
-			de centenas, numa thread so, portanto sem a disputa de baldes de
-			rate limit entre JVMs que inviabiliza o perfil completo.
+			Existe porque a duvida que motivou a medicao e sobre UMA classe:
+			sao 48 mutantes em vez de centenas, e cinco minutos em vez de
+			meia hora. O `pitest-completo` tambem roda, desde que com
+			`threads=1` (ver o aviso lá); este perfil ja fixa `threads` em 1
+			pelo mesmo motivo, e nao depende de ninguem lembrar da flag.
 
 			ATENCAO AO QUE ELE NAO MEDE. Nenhum mutador do PIT altera o tipo
 			capturado num `catch`, e o 409 nao mora aqui: esta em
