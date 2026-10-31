@@ -260,6 +260,66 @@ class PublicFlowIntegrationTest extends AbstractPostgresIntegrationTest {
 			agendar(TERCA, "13:00", List.of(barbaId)).andExpect(status(201));
 		}
 
+		/*
+		 * Os quatro casos abaixo saem da medicao por mutante: a aritmetica de
+		 * validarBloqueios tinha cinco mutantes sobrevivendo a suite inteira.
+		 * O motivo era estreito e concreto -- o unico bloqueio testado ia de
+		 * 12:00 a 13:00, com minuto zero nas duas pontas, e so a borda "o
+		 * slot comeca exatamente quando o bloqueio termina" tinha teste.
+		 *
+		 * Por isso todos usam minutos diferentes de zero, e cada um escolhe
+		 * os horarios para que uma alteracao especifica da aritmetica mude a
+		 * resposta. Nao sao quatro variacoes do mesmo caso: sao quatro
+		 * posicoes distintas do slot em relacao ao bloqueio.
+		 */
+
+		@Test
+		@DisplayName("o slot termina exatamente quando o bloqueio comeca -> passa")
+		void terminarNoInicioDoBloqueioPassa() throws Exception {
+			// A borda espelhada da de cima, e a que faltava. Barba de 10min
+			// as 13:00 termina 13:10, que e quando o bloqueio comeca:
+			// encostar nao colide, dos dois lados.
+			bloquear("13:10", "13:50");
+
+			agendar(TERCA, "13:00", List.of(barbaId)).andExpect(status(201));
+		}
+
+		@Test
+		@DisplayName("bloqueio inteiro antes do slot -> passa")
+		void bloqueioAntesDoSlotPassa() throws Exception {
+			// 09:10-09:50 termina muito antes de 10:20-11:10. O minuto do
+			// INICIO DO SLOT e o que importa aqui: somar ou subtrair os 20
+			// minutos das 10:20 decide se o slot parece comecar antes do fim
+			// do bloqueio.
+			bloquear("09:10", "09:50");
+
+			agendar(TERCA, "10:20", List.of(corteId)).andExpect(status(201));
+		}
+
+		@Test
+		@DisplayName("bloqueio inteiro depois do slot, por 10 minutos -> passa")
+		void bloqueioDepoisDoSlotPassa() throws Exception {
+			// 13:10-14:00 termina 10 minutos antes de 14:10. A folga e
+			// pequena de proposito: e o minuto do INICIO DO BLOQUEIO que
+			// decide, e com 14:10 lido como 14:00 o slot passaria a colidir.
+			bloquear("14:10", "14:50");
+
+			agendar(TERCA, "13:10", List.of(corteId)).andExpect(status(201));
+		}
+
+		@Test
+		@DisplayName("slot comeca dentro do bloqueio, com minutos quebrados -> 409")
+		void comecarDentroDoBloqueioColide() throws Exception {
+			// 14:20 cai dentro de 14:10-14:50. Aqui quem decide e o minuto do
+			// FIM DO BLOQUEIO: com 14:50 lido como 14:40, o slot das 14:20
+			// deixaria de colidir e o cliente reservaria em cima do bloqueio.
+			bloquear("14:10", "14:50");
+
+			agendar(TERCA, "14:20", List.of(corteId))
+					.andExpect(status(409))
+					.andExpect(mensagem("Este horário está reservado pelo profissional"));
+		}
+
 		@Test
 		@DisplayName("servico inexistente -> 404")
 		void servicoInexistente() throws Exception {
@@ -537,6 +597,16 @@ class PublicFlowIntegrationTest extends AbstractPostgresIntegrationTest {
 				  "guestPhone": "5522999990000"
 				}
 				""".formatted(jhonatan.getId(), ids, dia, hora)));
+	}
+
+	/** Um bloqueio do profissional na {@link #TERCA}, no intervalo dado. */
+	private void bloquear(String inicio, String fim) {
+		ScheduleBlock bloqueio = new ScheduleBlock();
+		bloqueio.setProfessional(this.jhonatan);
+		bloqueio.setDate(TERCA.toString());
+		bloqueio.setStartTime(inicio);
+		bloqueio.setEndTime(fim);
+		this.blocks.saveAndFlush(bloqueio);
 	}
 
 	private List<String> consultarHorarios(LocalDate dia, String servicoId, int duracao)
