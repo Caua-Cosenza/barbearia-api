@@ -432,6 +432,28 @@ class SlotCalculatorTest {
 	// Vaos
 	// =======================================================================
 
+	/**
+	 * <b>Nota de mutation testing — quatro mutantes vivos aqui, de
+	 * proposito.</b>
+	 *
+	 * <p>O PIT reporta como sobreviventes as duas guardas de
+	 * {@code SlotCalculator.vaosLivres}: {@code if (cursor < bloco[0])} e
+	 * {@code if (cursor < fechamento)}, tanto trocando {@code <} por
+	 * {@code <=} quanto substituindo o {@code if} inteiro por {@code true}.
+	 *
+	 * <p><b>Sao mutantes equivalentes, e nenhum teste pode mata-los.</b> As
+	 * duas guardas sao otimizacao, nao regra: quem de fato filtra vao
+	 * degenerado e o laco que gera os horarios,
+	 * {@code inicio + duracaoSlot <= vao[1]}. Como {@code duracaoSlot >= 1}
+	 * sempre — {@code SlotRequest} exige duracao positiva e o teto e
+	 * {@code min(x, 50)} — um vao de largura zero, ou invertido, nao produz
+	 * horario nenhum. Nao ha saida observavel diferente para assertar.
+	 *
+	 * <p>Escrever teste para isso seria perseguir score: custo de manutencao
+	 * sem proteger comportamento que alguem usa. Os casos que importam —
+	 * agendamentos sobrepostos, aninhados e encostados — ja estao cobertos
+	 * abaixo, e sao eles que provam que o colapso de vaos funciona.
+	 */
 	@Nested
 	@DisplayName("Vaos entre agendamentos")
 	class Vaos {
@@ -598,6 +620,33 @@ class SlotCalculatorTest {
 					.isInstanceOf(IllegalArgumentException.class);
 			assertThatThrownBy(() -> new WorkingHours(-1, ABERTURA, FECHAMENTO))
 					.isInstanceOf(IllegalArgumentException.class);
+		}
+
+		/**
+		 * Os dois extremos <b>validos</b>: domingo (0) e sabado (6).
+		 *
+		 * <p>Faltavam, e o buraco tem uma explicacao de producao: a tabela
+		 * {@code professional_availability} so tem os dias 1 a 4 — sexta e
+		 * sabado sao por ordem de chegada e domingo e fechado — entao nenhuma
+		 * fixture precisou construir 0 ou 6, e o teste de borda so usava os
+		 * invalidos (7 e -1).
+		 *
+		 * <p>Sem isto, trocar {@code dayOfWeek > 6} por {@code >= 6} passava
+		 * pela suite inteira: sabado deixava de ser um dia valido e <b>nenhum
+		 * dos 487 testes reclamava</b>. Verificado a mao antes de escrever
+		 * este teste.
+		 *
+		 * <p>A regra vale mesmo sem jornada cadastrada nesses dias: o record
+		 * e do dominio e aceita a semana inteira. Se um dia a barbearia abrir
+		 * no sabado, o cadastro nao pode esbarrar num limite errado.
+		 */
+		@ParameterizedTest(name = "dayOfWeek {0} e valido")
+		@ValueSource(ints = { 0, 1, 2, 3, 4, 5, 6 })
+		@DisplayName("os sete dias da semana sao aceitos, extremos inclusive")
+		void dayOfWeekValidoEmTodaASemana(int dia) {
+			WorkingHours jornada = new WorkingHours(dia, ABERTURA, FECHAMENTO);
+
+			assertThat(jornada.dayOfWeek()).isEqualTo(dia);
 		}
 
 		@Test

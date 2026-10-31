@@ -57,6 +57,25 @@ class CookieFactoryTest {
 		}
 
 		@Test
+		@DisplayName("COOKIE_DOMAIN definido em dev NAO manda Domain — quem decide e o ambiente")
+		void dominioConfiguradoEmDevEIgnorado() {
+			// A condicao e `producao && hasText(dominio)`, e as duas partes
+			// importam. Antes, todo teste de dev tinha o dominio vazio, entao
+			// trocar `producao` por `true` nao mudava nada e o mutante
+			// sobrevivia.
+			//
+			// O cenario e real: basta exportar COOKIE_DOMAIN na maquina de
+			// quem desenvolve. Mandar Domain=.barbeariajhonatan.com a partir
+			// de localhost faz o navegador DESCARTAR o cookie -- o login
+			// passaria a falhar em dev sem motivo aparente.
+			CookieFactory comDominioEmDev = new CookieFactory(false, DOMINIO);
+
+			assertThat(comDominioEmDev.accessToken("x").toString()).doesNotContain("Domain");
+			assertThat(comDominioEmDev.refreshToken("x").toString()).doesNotContain("Domain");
+			assertThat(comDominioEmDev.limparAccessToken().toString()).doesNotContain("Domain");
+		}
+
+		@Test
 		@DisplayName("refresh: Path restrito a rota de refresh, 7 dias")
 		void refresh() {
 			String cookie = cookies.refreshToken("token-xyz").toString();

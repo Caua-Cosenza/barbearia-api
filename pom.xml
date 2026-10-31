@@ -249,6 +249,32 @@
 					</excludedClasses>
 
 					<!--
+						Guardas de nulo que o caminho vivo nao alcanca.
+
+						`MensagensDeWhatsApp.somenteDigitos` e
+						`SlotQueryMapper.parseHora` comecam com um `if` de
+						nulo que nenhuma entrada real dispara: o record
+						`ChatMessage` recusa telefone nulo na construcao, e as
+						colunas de hora sao NOT NULL no banco. Remover essas
+						guardas gera mutante que sobrevive, e escrever teste
+						para mata-lo seria cobrir caminho morto: custo de
+						manutencao permanente sem proteger comportamento que
+						alguem usa.
+
+						PRECO DESTA EXCLUSAO, para ficar registrado: o PIT nao
+						sabe suprimir um mutante isolado, so o metodo inteiro.
+						Cada um destes tem tambem UM mutante legitimamente
+						morto (o parse em si, e o retorno de somenteDigitos),
+						e esses saem da conta junto. Ou seja, a exclusao
+						melhora o numero e perde um pouco de sinal: foi uma
+						escolha consciente, nao um efeito colateral.
+					-->
+					<excludedMethods>
+						<param>somenteDigitos</param>
+						<param>parseHora</param>
+					</excludedMethods>
+
+					<!--
 						Quais testes o PIT usa para matar os mutantes. O
 						default inclui TUDO: e o numero honesto, e leva horas,
 						porque cada minion do PIT sobe o contexto do Spring e

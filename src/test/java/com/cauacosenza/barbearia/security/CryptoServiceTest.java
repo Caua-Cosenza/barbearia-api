@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -303,32 +304,111 @@ class CryptoServiceTest {
 	// Falhas
 	// =======================================================================
 
+	/**
+	 * <b>Nota de mutation testing — um mutante vivo aqui, de proposito.</b>
+	 *
+	 * <p>Em {@code decrypt}, a checagem de separador repetido usa
+	 * {@code ciphertext.indexOf(':', separator + 1) >= 0}. O PIT reporta como
+	 * sobrevivente a troca de {@code >= 0} por {@code > 0}, e ela e
+	 * <b>equivalente por construcao</b>: a essa altura {@code separator >= 0}
+	 * (o caso {@code -1} ja retornou acima), entao o {@code fromIndex} e no
+	 * minimo 1 e o retorno so pode ser {@code -1} ou {@code >= 1}. O valor 0
+	 * e inalcancavel, e nenhuma entrada distingue as duas versoes.
+	 *
+	 * <p>Os outros cinco sobreviventes desta classe <b>eram</b> buraco real e
+	 * foram fechados: as mensagens de cada validacao agora estao fixadas em
+	 * {@link Falhas#entradaMalformadaTemMensagemPropria}. Vale registrar o
+	 * que o exercicio mostrou de bom: nenhuma daquelas mutacoes fazia um
+	 * ciphertext malformado ser <i>aceito</i> — todas continuavam recusando,
+	 * so que com outra mensagem.
+	 */
 	@Nested
 	@DisplayName("Falhas")
 	class Falhas {
 
-		@ParameterizedTest(name = "entrada malformada rejeitada: \"{0}\"")
-		@ValueSource(strings = { "semdoispontos", ":", "abc:", "zz:zz", "", "   " })
-		void entradaMalformadaViraCryptoException(String entrada) {
+		/**
+		 * Cada entrada malformada, com a mensagem EXATA que ela produz.
+		 *
+		 * <p>Antes este teste so afirmava que {@code CryptoException} tinha
+		 * sido lancada, e isso deixava cinco mutantes vivos: removendo
+		 * qualquer uma das validacoes de formato, a entrada continuava sendo
+		 * recusada — so que por outro caminho e com outra mensagem — e o
+		 * teste nao percebia.
+		 *
+		 * <p>Vale enunciar o que o mutation testing mostrou de bom aqui:
+		 * <b>nenhuma</b> dessas mutacoes fazia um ciphertext malformado ser
+		 * <i>aceito</i>. A propriedade de seguranca ja estava protegida; o
+		 * que faltava era fixar o diagnostico, que e o que diz ao operador
+		 * qual das validacoes recusou o dado.
+		 *
+		 * <p>O par mais delicado e o do IV com tamanho errado. Sem a checagem
+		 * de tamanho, quem recusa e o proprio JCE — {@code Cipher.init}
+		 * lanca {@code InvalidAlgorithmParameterException}, que cai no
+		 * {@code catch} e vira {@code "Falha ao decifrar: ..."}. As duas
+		 * mensagens sao diferentes, e e por isso que este teste fixa a
+		 * especifica.
+		 */
+		@ParameterizedTest(name = "\"{0}\" -> \"{1}\"")
+		@CsvSource(delimiter = '|', value = {
+				// Sem separador nenhum.
+				"semdoispontos          | Formato invalido: separador ':' ausente",
+				"semdoispontos:         | Formato invalido: ciphertext ausente",
+				// So o separador: o IV fica vazio. Note que NAO e recusado por
+				// "separador ausente" -- o indexOf acha o ':' na posicao 0.
+				":                      | Formato invalido: IV ausente",
+				":aabb                  | Formato invalido: IV ausente",
+				// Separador a mais: o Node descartaria o excedente em silencio.
+				"aabb:ccdd:eeff         | Formato invalido: mais de um separador ':'",
+				// Hex invalido de cada lado, com o campo nomeado.
+				"zz:zz                  | Hexadecimal invalido no campo IV",
+				"aabbccddaabbccddaabbccddaabbccdd:zz | Hexadecimal invalido no campo ciphertext",
+				// Hex valido, IV de 4 bytes em vez de 16. Sem a checagem de
+				// tamanho isto viraria "Falha ao decifrar".
+				"aabbccdd:aabbccdd      | IV invalido: esperado 16 bytes, recebido 4",
+				// So espacos: nao ha separador. As aspas simples sao
+				// obrigatorias -- sem elas o @CsvSource apara o branco, o
+				// valor vira nulo e o caso testado passa a ser outro.
+				"'   '                  | Formato invalido: separador ':' ausente",
+		})
+		@DisplayName("entrada malformada: a mensagem diz QUAL validacao recusou")
+		void entradaMalformadaTemMensagemPropria(String entrada, String mensagemEsperada) {
 			assertThatThrownBy(() -> CryptoServiceTest.this.crypto.decrypt(entrada))
-					.isInstanceOf(CryptoException.class);
+					.isInstanceOf(CryptoException.class)
+					.hasMessage(mensagemEsperada);
 		}
 
 		@Test
-		@DisplayName("valor nulo vira CryptoException")
+		@DisplayName("string vazia e recusada por falta de separador")
+		void stringVaziaERecusada() {
+			// Fora do @CsvSource porque o parser do JUnit entrega "" como
+			// nulo, e o caso nulo tem mensagem propria.
+			assertThatThrownBy(() -> CryptoServiceTest.this.crypto.decrypt(""))
+					.isInstanceOf(CryptoException.class)
+					.hasMessage("Formato invalido: separador ':' ausente");
+		}
+
+		@Test
+		@DisplayName("valor nulo tem mensagem propria, diferente da de formato")
 		void nuloViraCryptoException() {
 			assertThatThrownBy(() -> CryptoServiceTest.this.crypto.decrypt(null))
-					.isInstanceOf(CryptoException.class);
+					.isInstanceOf(CryptoException.class)
+					.hasMessage("Nao e possivel decifrar um valor nulo");
 			assertThatThrownBy(() -> CryptoServiceTest.this.crypto.encrypt(null))
-					.isInstanceOf(CryptoException.class);
+					.isInstanceOf(CryptoException.class)
+					.hasMessage("Nao e possivel cifrar um valor nulo");
 		}
 
 		@Test
-		@DisplayName("IV com tamanho errado vira CryptoException")
-		void ivComTamanhoErradoViraCryptoException() {
-			// Hex valido, mas 4 bytes em vez de 16.
-			assertThatThrownBy(() -> CryptoServiceTest.this.crypto.decrypt("aabbccdd:aabbccdd"))
-					.isInstanceOf(CryptoException.class);
+		@DisplayName("ciphertext de tamanho invalido falha no JCE, com a outra mensagem")
+		void falhaDoJceTemMensagemPropria() {
+			// IV correto (16 bytes) e ciphertext que nao e multiplo do bloco:
+			// as validacoes de formato passam todas, e quem recusa e o JCE.
+			// E o contraponto do caso "IV invalido": prova que as duas
+			// mensagens sao distinguiveis.
+			assertThatThrownBy(() -> CryptoServiceTest.this.crypto
+					.decrypt("aabbccddaabbccddaabbccddaabbccdd:aabbcc"))
+					.isInstanceOf(CryptoException.class)
+					.hasMessageStartingWith("Falha ao decifrar: ");
 		}
 
 		@Test
@@ -392,13 +472,42 @@ class CryptoServiceTest {
 					.hasMessageNotContaining("00112233445566778899aabbccddeeff");
 		}
 
+		/**
+		 * Chave ausente e chave malformada sao erros diferentes, e cada um
+		 * tem a sua mensagem.
+		 *
+		 * <p>A distincao importa para quem esta subindo a aplicacao:
+		 * "ENCRYPTION_KEY nao definida" manda conferir o ambiente,
+		 * "ENCRYPTION_KEY invalida: esperado 32 bytes" manda conferir o
+		 * valor. Sem fixar a mensagem, remover o {@code isBlank()} do
+		 * {@code decodeKey} passava despercebido: a chave em branco seguia
+		 * adiante, virava um array vazio e era recusada pelo tamanho, com a
+		 * mensagem errada.
+		 */
+		@ParameterizedTest(name = "chave \"{0}\" -> \"{1}\"")
+		@CsvSource(delimiter = '|', value = {
+				"'   '  | ENCRYPTION_KEY nao definida",
+				"'\t'   | ENCRYPTION_KEY nao definida",
+		})
+		@DisplayName("chave em branco e 'nao definida', nao 'invalida'")
+		void chaveEmBrancoTemMensagemPropria(String chave, String mensagemEsperada) {
+			assertThatThrownBy(() -> new CryptoService(chave))
+					.isInstanceOf(CryptoException.class)
+					.hasMessage(mensagemEsperada);
+		}
+
 		@Test
-		@DisplayName("chave invalida e recusada na construcao")
+		@DisplayName("chave invalida e recusada na construcao, com a mensagem de cada caso")
 		void chaveInvalidaRecusadaNaConstrucao() {
-			assertThatThrownBy(() -> new CryptoService(null)).isInstanceOf(CryptoException.class);
-			assertThatThrownBy(() -> new CryptoService("")).isInstanceOf(CryptoException.class);
+			assertThatThrownBy(() -> new CryptoService(null))
+					.isInstanceOf(CryptoException.class)
+					.hasMessage("ENCRYPTION_KEY nao definida");
+			assertThatThrownBy(() -> new CryptoService(""))
+					.isInstanceOf(CryptoException.class)
+					.hasMessage("ENCRYPTION_KEY nao definida");
 			assertThatThrownBy(() -> new CryptoService("naoHex".repeat(11)))
-					.isInstanceOf(CryptoException.class);
+					.isInstanceOf(CryptoException.class)
+					.hasMessage("ENCRYPTION_KEY nao e hexadecimal valido");
 			assertThatCode(() -> new CryptoService(TEST_KEY)).doesNotThrowAnyException();
 		}
 

@@ -169,6 +169,72 @@ class MensagensDeWhatsAppTest {
 					.isEqualTo("(55) 98765-4321");
 		}
 
+		@Test
+		@DisplayName("número com MAIS de 11 dígitos que não começa com 55 fica intacto")
+		void naoTiraPrefixoDeQuemNaoTemDdi() {
+			// O outro lado do `&&`: a condicao exige as DUAS coisas. Sem esta
+			// asercao, trocar `startsWith("55")` por `true` passava pela
+			// suite -- todos os casos testados ou comecavam com 55, ou tinham
+			// 11 digitos ou menos.
+			//
+			// 13 digitos comecando com 11: se o prefixo fosse cortado, sairia
+			// "(22) 23334-4455" em vez do formato de numero longo.
+			assertThat(MensagensDeWhatsApp.formatarTelefone("1122233344455"))
+					.isEqualTo("(11) 2223-3344455");
+		}
+
+		/**
+		 * Numeros curtos demais para qualquer dos dois formatos.
+		 *
+		 * <p>Caem no ramo de fallback, que usa o {@code recortar} — a
+		 * emulacao do {@code slice} do JavaScript, que <b>nao estoura</b> em
+		 * indice fora do intervalo. Nenhum teste exercitava esse caminho, e
+		 * sem ele as guardas do {@code recortar} podiam ser removidas sem que
+		 * nada reclamasse; na pratica, qualquer telefone com menos de 6
+		 * digitos passava a derrubar a montagem da mensagem com
+		 * {@code StringIndexOutOfBoundsException}.
+		 *
+		 * <p>O resultado e feio de proposito: o Node nao valida tamanho aqui,
+		 * e um aviso torto para o barbeiro e melhor do que uma excecao que
+		 * impede o aviso inteiro de sair. Ver {@code formatarTelefone}.
+		 *
+		 * <p><b>Nota de mutation testing — dois mutantes seguem vivos no
+		 * {@code recortar}, e sao equivalentes.</b> Dos quatro que o PIT
+		 * apontava, estes casos mataram os dois que importavam (remover a
+		 * guarda, que passava a estourar
+		 * {@code StringIndexOutOfBoundsException}). Os outros dois trocam
+		 * {@code inicio >= valor.length()} por {@code >}, e isso so muda o
+		 * comportamento quando {@code inicio == length} — situacao em que o
+		 * ramo alternativo faz {@code substring(length, length)} e devolve a
+		 * string vazia, exatamente o que a guarda devolveria. Nao ha entrada
+		 * que distinga as duas versoes.
+		 *
+		 * <p>Faltaria ainda o caso de indice <b>negativo</b>, que nao e
+		 * alcancavel: {@code recortar} e privado e so e chamado com 0, 2 e 6.
+		 * Testa-lo exigiria abrir o metodo so para o teste, o que e mudar
+		 * producao para perseguir score.
+		 */
+		@ParameterizedTest(name = "\"{0}\" ({1} dígitos) -> \"{2}\"")
+		@CsvSource({
+				// Vazio: todos os tres recortes caem fora.
+				"'',          0, '() -'",
+				// Menos que o primeiro recorte termina.
+				"1,           1, '(1) -'",
+				// Exatamente no limite do primeiro recorte.
+				"12,          2, '(12) -'",
+				"123,         3, '(12) 3-'",
+				// Exatamente no limite do segundo recorte.
+				"123456,      6, '(12) 3456-'",
+				// Um digito depois dele.
+				"1234567,     7, '(12) 3456-7'",
+		})
+		@DisplayName("número curto não estoura: o recorte se comporta como o slice do JS")
+		void numeroCurtoNaoEstoura(String telefone, int digitos, String esperado) {
+			assertThat(telefone).hasSize(digitos);
+
+			assertThat(MensagensDeWhatsApp.formatarTelefone(telefone)).isEqualTo(esperado);
+		}
+
 	}
 
 	@Nested
