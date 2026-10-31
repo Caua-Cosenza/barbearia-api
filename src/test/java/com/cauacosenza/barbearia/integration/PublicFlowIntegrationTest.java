@@ -1,6 +1,7 @@
 package com.cauacosenza.barbearia.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -145,6 +146,85 @@ class PublicFlowIntegrationTest extends AbstractPostgresIntegrationTest {
 			assertThat(criado.get("data").get("totalDurationMinutes").asInt()).isEqualTo(60);
 			assertThat(criado.get("data").get("totalAmountCents").asInt()).isEqualTo(10000);
 			assertThat(criado.get("data").get("cancelToken").asString()).isNotBlank();
+		}
+
+		/**
+		 * Os campos que {@code montar} grava e ninguem conferia.
+		 *
+		 * <p>Saem da medicao por mutante: remover {@code setNotes},
+		 * {@code setGuestEmail} ou o {@code setAmountCents} de cada item
+		 * passava pela suite inteira sem quebrar nada.
+		 *
+		 * <p>O terceiro e o que pesa. Nao e o total do agendamento — esse ja
+		 * tinha asercao logo acima — e sim o <b>preco congelado de cada
+		 * item</b>, em {@code appointment_services}. Ele e o registro do que
+		 * foi contratado, e tem duas saidas visiveis: o
+		 * {@code CancelService} soma os itens para montar o total da mensagem
+		 * de cancelamento no WhatsApp, e o {@code services[]} da resposta de
+		 * criacao vem deles. Com o item zerado, o cliente leria
+		 * "Total: R$ 0,00" no cancelamento.
+		 *
+		 * <p>Os dois servicos tem precos <b>diferentes</b> de proposito: com
+		 * valores iguais, trocar um item pelo outro passaria despercebido.
+		 */
+		@Test
+		@DisplayName("notes, e-mail e o preco congelado de cada item vao para o banco")
+		void camposOpcionaisEPrecoDeCadaItem() throws Exception {
+			com.cauacosenza.barbearia.domain.entity.Service pigmentacao =
+					new com.cauacosenza.barbearia.domain.entity.Service();
+			pigmentacao.setName("Pigmentação");
+			pigmentacao.setAmountCents(7500);
+			pigmentacao.setDurationMinutes(20);
+			pigmentacao.setActive(true);
+			services.saveAndFlush(pigmentacao);
+
+			JsonNode criado = corpoDe(mvc.perform(postJson("/api/v1/appointments/public", """
+					{
+					  "professionalId": "%s",
+					  "serviceIds": ["%s", "%s"],
+					  "scheduledAt": "2026-12-15T10:20:00-03:00",
+					  "guestName": "Maria Aparecida",
+					  "guestPhone": "5522999990000",
+					  "guestEmail": "maria@exemplo.com.br",
+					  "notes": "Prefere máquina 2 nas laterais"
+					}
+					""".formatted(jhonatan.getId(), corteId, pigmentacao.getId()))));
+
+			String id = criado.get("data").get("id").asString();
+			Appointment gravado = appointments.findById(id).orElseThrow();
+
+			assertThat(gravado.getNotes()).isEqualTo("Prefere máquina 2 nas laterais");
+			assertThat(gravado.getGuestEmail()).isEqualTo("maria@exemplo.com.br");
+
+			// O e-mail e PII e vai cifrado; a observacao e recado para o
+			// barbeiro e fica em claro. A diferenca e deliberada, entao vale
+			// afirmar as duas.
+			assertThat(jdbc.queryForObject(
+					"SELECT \"guest_email_encrypted\" FROM \"appointments\" WHERE \"id\" = ?",
+					String.class, id)).matches("^[0-9a-f]{32}:[0-9a-f]+$");
+			assertThat(jdbc.queryForObject(
+					"SELECT \"notes\" FROM \"appointments\" WHERE \"id\" = ?",
+					String.class, id)).isEqualTo("Prefere máquina 2 nas laterais");
+
+			// O preco de cada item, amarrado ao servico que o gerou. Lido da
+			// tabela e nao de gravado.getBookedServices(): a colecao e lazy e
+			// aqui nao ha transacao aberta. Ler o que esta gravado tambem e
+			// mais honesto -- e esta linha que o CancelService vai somar
+			// daqui a meses.
+			assertThat(jdbc.queryForList("""
+					SELECT s."name" AS nome, i."amount_cents" AS valor
+					  FROM "appointment_services" i
+					  JOIN "services" s ON s."id" = i."service_id"
+					 WHERE i."appointment_id" = ?
+					""", id))
+					.extracting(linha -> linha.get("nome"), linha -> linha.get("valor"))
+					.containsExactlyInAnyOrder(
+							tuple("Corte", 5000),
+							tuple("Pigmentação", 7500));
+
+			// E o total do agendamento e a soma deles, lida do catalogo.
+			assertThat(gravado.getAmountCents()).isEqualTo(12500);
+			assertThat(criado.get("data").get("totalAmountCents").asInt()).isEqualTo(12500);
 		}
 
 		@Test
