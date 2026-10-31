@@ -439,7 +439,7 @@
 		<profile>
 			<id>pitest-completo</id>
 			<properties>
-				<pitest.threads>2</pitest.threads>
+				<pitest.threads>1</pitest.threads>
 			</properties>
 			<build>
 				<plugins>
