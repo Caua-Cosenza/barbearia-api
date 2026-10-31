@@ -115,7 +115,6 @@ public class SecurityConfig {
 						// Publicas porque quem vai logar ainda nao esta
 						// autenticado, e quem tem token expirado precisa
 						// conseguir sair.
-						.requestMatchers(HttpMethod.POST, "/api/v1/auth/register").permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/refresh").permitAll()
 						.requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").permitAll()

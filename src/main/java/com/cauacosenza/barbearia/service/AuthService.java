@@ -10,12 +10,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.cauacosenza.barbearia.domain.entity.AdminUser;
 import com.cauacosenza.barbearia.domain.entity.RefreshToken;
-import com.cauacosenza.barbearia.domain.enums.Role;
 import com.cauacosenza.barbearia.domain.exception.CredenciaisInvalidasException;
-import com.cauacosenza.barbearia.domain.exception.EmailJaCadastradoException;
 import com.cauacosenza.barbearia.domain.exception.SessaoInvalidaException;
 import com.cauacosenza.barbearia.dto.request.LoginRequest;
-import com.cauacosenza.barbearia.dto.request.RegisterRequest;
 import com.cauacosenza.barbearia.dto.response.LoginResponse;
 import com.cauacosenza.barbearia.repository.AdminUserRepository;
 import com.cauacosenza.barbearia.repository.RefreshTokenRepository;
@@ -59,35 +56,6 @@ public class AuthService {
 		this.senhas = senhas;
 		this.jwt = jwt;
 		this.clock = clock;
-	}
-
-	/**
-	 * Cria uma conta nova.
-	 *
-	 * <p>A conta nasce com {@link Role#CLIENT}, o default da coluna, e
-	 * portanto <b>nao alcanca</b> {@code /admin}. Nenhuma tela chama esta
-	 * rota — ver {@link RegisterRequest}.
-	 *
-	 * <p>Nao emite tokens: o Node responde 201 com id e e-mail, e quem se
-	 * cadastra faz login em seguida.
-	 */
-	@Transactional
-	public ContaCriada registrar(RegisterRequest pedido) {
-		if (this.usuarios.findByEmail(pedido.email()).isPresent()) {
-			throw new EmailJaCadastradoException();
-		}
-
-		AdminUser usuario = new AdminUser();
-		usuario.setEmail(pedido.email());
-		// Bcrypt custo 12, o mesmo do Node. A senha em claro morre aqui.
-		usuario.setPasswordHash(this.senhas.encode(pedido.password()));
-		// Nome e telefone vao cifrados pelo EncryptedStringConverter.
-		usuario.setName(pedido.name());
-		usuario.setPhone(pedido.phone());
-		usuario.setRole(Role.CLIENT);
-
-		AdminUser salvo = this.usuarios.saveAndFlush(usuario);
-		return new ContaCriada(salvo.getId(), salvo.getEmail());
 	}
 
 	/**
@@ -218,15 +186,6 @@ public class AuthService {
 	 * @param corpo {@code null} no refresh, que responde {@code data: null}
 	 */
 	public record Sessao(String accessToken, String refreshToken, LoginResponse corpo) {
-
-	}
-
-	/**
-	 * O corpo de {@code POST /api/v1/auth/register}: so id e e-mail.
-	 *
-	 * <p>Nunca o hash da senha, nunca o papel, nunca um token.
-	 */
-	public record ContaCriada(String id, String email) {
 
 	}
 

@@ -110,7 +110,6 @@ de descobrir se há sessão.
 
 | Método | Caminho | O que faz |
 | --- | --- | --- |
-| POST | `/api/v1/auth/register` | cria conta (ver ressalva abaixo) |
 | POST | `/api/v1/auth/login` | grava os dois cookies |
 | POST | `/api/v1/auth/refresh` | rotaciona o par de tokens |
 | POST | `/api/v1/auth/logout` | limpa os cookies e revoga o refresh |
@@ -563,7 +562,7 @@ E as da Fase 6:
 | O que se supunha | O que o código diz |
 | --- | --- |
 | `PATCH /api/v1/admin/appointments/{id}` | é **`PUT .../{id}/status`**, com corpo `{ status }` |
-| só login, refresh e logout em `/auth` | existe também **`POST /auth/register`**, que nenhuma tela chama |
+| só login, refresh e logout em `/auth` | havia também `POST /auth/register`, que nenhuma tela chamava — **removido**, ver abaixo |
 | o refresh token seria hasheado | é **SHA-256 hex**, não bcrypt — e por um bom motivo (ver acima) |
 | no-shows talvez por período | é **acumulado desde sempre**, confirmado |
 
@@ -578,13 +577,23 @@ Três detalhes a mais:
   `UpdateStatusSchema` do Node lista só `CONFIRMED`, `CANCELLED`, `COMPLETED` e
   `NO_SHOW`. O admin não devolve um agendamento ao estado inicial.
 
-#### `POST /auth/register` existe e nada o usa
+#### `POST /auth/register` existia e foi removido
 
-Foi portado para manter a equivalência, mas **nenhuma tela o chama**: o painel
-tem um único administrador, criado pelo seed. A conta nasce com `CLIENT` e
-portanto não alcança `/admin` — quem se cadastrar recebe 403 em toda rota do
-painel. Ainda assim é uma rota pública que cria conta, ou seja, superfície de
-ataque sem contrapartida. **Recomendo removê-la no corte.**
+Tinha sido portado para manter a equivalência com o Node, e **nenhuma tela o
+chamava**: o painel tem um único administrador, criado pelo seed, que grava a
+linha direto via Prisma. Foi medido antes de sair — respondia **201 sem
+autenticação nenhuma**, criando conta `CLIENT`. Como `CLIENT` não alcança
+`/admin`, não era escalada de privilégio; era escrita não autenticada em
+`admin_users`, de um tipo de conta que o sistema não consome (o agendamento é
+público, sem conta).
+
+Saíram juntos o método do `AuthController`, o `AuthService.registrar`, o
+`RegisterRequest`, a `EmailJaCadastradoException`, a linha de `permitAll()` no
+`SecurityConfig` e o `registerSchema`/`RegisterForm` órfãos do frontend.
+
+A ausência tem teste: `RegistroFoiRemovidoTest` afirma que o caminho responde
+**exatamente igual** a um que nunca existiu — 401 do `anyRequest().denyAll()`,
+e não 404, porque a cadeia do Spring Security roda antes do roteamento.
 
 Dois detalhes que só aparecem lendo o código com atenção:
 
@@ -884,18 +893,17 @@ frontend em produção:
    afetados e confirmação explícita. Exige mudar o painel junto.
 2. **`noShowCount` deveria ter recorte de período**, como os outros três
    contadores. Muda um número que o dono vê todo dia.
-3. **Remover `POST /auth/register`**, que nada usa.
-4. **Coluna de posição em `appointment_services`.** Hoje nem o Node nem o Java
+3. **Coluna de posição em `appointment_services`.** Hoje nem o Node nem o Java
    têm ordem garantida dos serviços de um agendamento; o Java ordena por
    duração decrescente para ser determinístico e, de quebra, bater com a ordem
    de inserção do Node no caso comum ("Corte + Barba"). Uma coluna de posição
    resolveria de verdade — exige migration no schema compartilhado.
-5. **Aplicar a V2 em produção**, junto com a remoção do `prisma db push`.
-6. **Token CSRF por sessão**, já que `SameSite=None` em produção deixa a defesa
+4. **Aplicar a V2 em produção**, junto com a remoção do `prisma db push`.
+5. **Token CSRF por sessão**, já que `SameSite=None` em produção deixa a defesa
    inteiramente no CORS.
-7. **Reenvio manual de WhatsApp** a partir de `confirmation_sent = false`.
+6. **Reenvio manual de WhatsApp** a partir de `confirmation_sent = false`.
    Hoje a coluna registra quem ficou sem aviso, mas não há rota que reenvie.
-8. **Retry com backoff no envio.** Hoje uma falha é definitiva até alguém
+7. **Retry com backoff no envio.** Hoje uma falha é definitiva até alguém
    reenviar à mão. Uma fila com tentativas espaçadas cobriria a instabilidade
    curta da Evolution, que é o caso comum.
 

@@ -3,18 +3,15 @@ package com.cauacosenza.barbearia.controller;
 import jakarta.validation.Valid;
 
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.cauacosenza.barbearia.dto.request.LoginRequest;
-import com.cauacosenza.barbearia.dto.request.RegisterRequest;
 import com.cauacosenza.barbearia.dto.response.ApiResponse;
 import com.cauacosenza.barbearia.dto.response.LoginResponse;
 import com.cauacosenza.barbearia.security.CookieFactory;
@@ -43,18 +40,6 @@ public class AuthController {
 	public AuthController(AuthService autenticacao, CookieFactory cookies) {
 		this.autenticacao = autenticacao;
 		this.cookies = cookies;
-	}
-
-	/**
-	 * Cria uma conta. Responde 201.
-	 *
-	 * <p>Nenhuma tela chama esta rota; existe para manter a equivalencia com o
-	 * {@code routes/auth.ts} do Node. Ver {@code RegisterRequest} e o README.
-	 */
-	@PostMapping("/register")
-	@ResponseStatus(HttpStatus.CREATED)
-	public ApiResponse<AuthService.ContaCriada> registrar(@Valid @RequestBody RegisterRequest pedido) {
-		return ApiResponse.ok(this.autenticacao.registrar(pedido), "Account created");
 	}
 
 	/** Autentica e grava os dois cookies. */
