@@ -385,6 +385,108 @@
 				</plugins>
 			</build>
 		</profile>
+
+		<!--
+			Mutation testing completo: usa TODOS os testes, inclusive os de
+			integracao, para medir o que o `pitest-rapido` so consegue
+			reportar como NO_COVERAGE.
+
+				./mvnw -Ppitest-completo pitest:mutationCoverage
+
+			LEIA ANTES DE RODAR. Cada minion do PIT e uma JVM nova que sobe
+			contexto do Spring e, sem reuso de container, o seu proprio par
+			Postgres+Redis. Com `pitest.threads=16` sao 16 pares simultaneos:
+			a maquina entra em thrashing, timeout vira resultado de mutante e
+			sobram containers orfaos. Por isso `threads` aqui e 2, e nao o
+			valor global.
+
+			E O REUSO NAO RESOLVE SOZINHO, ainda. Com
+			`testcontainers.reuse.enable=true` as JVMs passam a dividir UM
+			Redis, e as chaves de rate limit tem uma hora de TTL enquanto a
+			janela do balde e de um minuto. Como o contador de
+			`RequisicaoDaBorda` reinicia em 1 a cada JVM, duas JVMs
+			concorrentes pedem o MESMO endereco e disputam o MESMO balde: a
+			segunda recebe 429 no primeiro pedido e falha por um motivo que
+			nada tem a ver com o mutante. Isso foi reproduzido, nao e
+			hipotese. Enquanto a chave de teste nao tiver um prefixo proprio
+			por JVM, este perfil so e confiavel com `threads` em 1.
+		-->
+		<profile>
+			<id>pitest-completo</id>
+			<properties>
+				<pitest.threads>2</pitest.threads>
+			</properties>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.pitest</groupId>
+						<artifactId>pitest-maven</artifactId>
+						<configuration>
+							<targetTests>
+								<param>com.cauacosenza.barbearia.*</param>
+							</targetTests>
+							<!--
+								O timeout default (4000ms + 1.25x o tempo do
+								teste) nao cabe num teste que sobe contexto do
+								Spring e espera container. Sem folga aqui,
+								mutante sobrevivente e mutante com timeout
+								ficam indistinguiveis no relatorio.
+							-->
+							<timeoutConstant>120000</timeoutConstant>
+							<timeoutFactor>2.0</timeoutFactor>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+
+		<!--
+			O recorte minimo: so a classe onde mora o tratamento de
+			concorrencia, so os testes que a exercitam.
+
+				./mvnw -Ppitest-concorrencia pitest:mutationCoverage
+
+			Existe porque o `pitest-completo` nao e viavel enquanto cada
+			minion subir o seu proprio par de containers, e porque a duvida
+			que motivou a medicao e sobre UMA classe. Sao 48 mutantes em vez
+			de centenas, numa thread so, portanto sem a disputa de baldes de
+			rate limit entre JVMs que inviabiliza o perfil completo.
+
+			ATENCAO AO QUE ELE NAO MEDE. Nenhum mutador do PIT altera o tipo
+			capturado num `catch`, e o 409 nao mora aqui: esta em
+			`SlotIndisponivelException`, que `excludedClasses` tira do escopo.
+			O metodo `gravar` gera exatamente UM mutante, e e um
+			`NullReturnValsMutator`. Ou seja, este perfil mede o resto da
+			classe; que as duas faces da corrida perdida viram 409 continua
+			sendo questao de mutante aplicado a mao.
+		-->
+		<profile>
+			<id>pitest-concorrencia</id>
+			<properties>
+				<pitest.threads>1</pitest.threads>
+			</properties>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.pitest</groupId>
+						<artifactId>pitest-maven</artifactId>
+						<configuration>
+							<targetClasses>
+								<param>com.cauacosenza.barbearia.service.PublicAppointmentService</param>
+							</targetClasses>
+							<targetTests>
+								<param>com.cauacosenza.barbearia.integration.ConcurrentBookingHttpTest</param>
+								<param>com.cauacosenza.barbearia.integration.PublicFlowIntegrationTest</param>
+								<param>com.cauacosenza.barbearia.integration.NotificacaoDeAgendamentoTest</param>
+								<param>com.cauacosenza.barbearia.controller.AppointmentControllerTest</param>
+							</targetTests>
+							<timeoutConstant>120000</timeoutConstant>
+							<timeoutFactor>2.0</timeoutFactor>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
 	</profiles>
 
 </project>
