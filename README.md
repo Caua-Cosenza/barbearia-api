@@ -259,6 +259,7 @@ motivo — nunca o valor. Ver `.env.example` para a lista completa.
 | `JWT_REFRESH_SECRET` | sim | mínimo 32 caracteres |
 | `ENCRYPTION_KEY` | sim | exatamente 64 caracteres hex (AES-256) |
 | `CORS_ORIGIN` | sim | uma ou mais URLs http/https, separadas por vírgula |
+| `EDGE_TOKEN` | só em `prod` | mínimo 32 caracteres; segredo compartilhado com a borda |
 | `FRONTEND_URL` | não | |
 | `EVOLUTION_API_URL` | não | API de WhatsApp |
 | `EVOLUTION_API_KEY` | não | API de WhatsApp |
@@ -640,13 +641,40 @@ do Cloudflare e do Railway, `req.ip` é o endereço do **proxy**: na prática
 **todos os clientes do Node compartilham um único balde**. Quem limita por IP
 de verdade hoje é a regra do Cloudflare, que usa `ip.src` na borda.
 
-O `ClientIpResolver` resolve o IP real na ordem `CF-Connecting-IP` →
-primeira entrada de `X-Forwarded-For` → `getRemoteAddr()`. Os dois cabeçalhos
-são forjáveis por quem fala direto com a aplicação sem passar pelo Cloudflare;
-quem fizer isso escolhe a própria chave de rate limit, mas não ganha acesso a
-nada — são usados **só** para limitar taxa, nunca para autorizar. Fechar essa
-brecha exige que o Railway só aceite conexão vinda do Cloudflare, o que é
-configuração de infraestrutura.
+### Como o IP do cliente é resolvido
+
+O `ClientIpResolver` usa, nesta ordem:
+
+1. **`X-Edge-Client-IP`, se o `X-Edge-Token` conferir** com o `EDGE_TOKEN`
+   configurado. É a borda se identificando; nenhum outro cabeçalho é lido.
+   Comparação em tempo constante (`MessageDigest.isEqual`).
+2. **A última entrada do `X-Forwarded-For`** — o par que de fato abriu a
+   conexão com a borda do Railway.
+3. **`getRemoteAddr()`**.
+
+O valor é validado como literal de IP (v4 ou v6) antes de virar chave de
+bucket; o que não for cai para o passo seguinte. Com isso o valor logado pelo
+`RateLimitFilter` é **sempre** um IP.
+
+A primeira versão confiava em `CF-Connecting-IP` e, na falta dele, na
+**primeira** entrada do `X-Forwarded-For`. Os dois são escolhidos pelo cliente
+quando a requisição não passa pela borda — e o `up.railway.app` é público, o
+Railway não oferece allowlist de IP na entrada, então sempre existe um caminho
+que não passa pela borda. Quem descobrisse isso trocava o cabeçalho a cada
+requisição e tinha bucket novo a cada requisição: rate limit inexistente,
+inclusive o bucket de 5/min do `/auth`, que é a trava de força bruta de senha.
+A entrada mais à esquerda do `X-Forwarded-For` era o pior dos dois, porque num
+cabeçalho de *append* ela é exatamente a parte que o cliente escreveu.
+`CF-Connecting-IP` deixou de ser lido: com o contrato da borda ele é
+redundante, e a aplicação passou a não olhar nenhum cabeçalho que o cliente
+consiga escrever. Os cenários estão em `ResolucaoDeIpDoClienteTest`.
+
+> **O passo 2 é seguro, não é regime permanente.** Sem `EDGE_TOKEN` — ou
+> enquanto a borda não enviar os dois cabeçalhos — a última entrada do
+> `X-Forwarded-For` de uma requisição vinda da Cloudflare é um IP de saída
+> **da Cloudflare**, igual para muita gente, e os visitantes voltam a dividir
+> poucos buckets. A mudança do Worker tem que entrar junto com o corte, não
+> depois.
 
 ### Jackson 3, não Jackson 2
 

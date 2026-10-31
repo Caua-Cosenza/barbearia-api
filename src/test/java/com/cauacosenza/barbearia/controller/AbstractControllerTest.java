@@ -4,8 +4,6 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
-import java.util.UUID;
-
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
@@ -14,6 +12,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
+import com.cauacosenza.barbearia.integration.RequisicaoDaBorda;
 import com.cauacosenza.barbearia.integration.SegredosDeTeste;
 import com.cauacosenza.barbearia.integration.TestcontainersConfiguration;
 import com.cauacosenza.barbearia.service.AvailableTimesService;
@@ -47,14 +46,11 @@ import com.cauacosenza.barbearia.service.PublicAppointmentService;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK,
 		properties = { SegredosDeTeste.ENCRYPTION_KEY, SegredosDeTeste.JWT_SECRET,
-				SegredosDeTeste.JWT_REFRESH_SECRET })
+				SegredosDeTeste.JWT_REFRESH_SECRET, SegredosDeTeste.EDGE_TOKEN })
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
 abstract class AbstractControllerTest {
-
-	/** Cabecalho que o {@code ClientIpResolver} consulta primeiro. */
-	private static final String CF_CONNECTING_IP = "CF-Connecting-IP";
 
 	@MockitoBean
 	protected CatalogService catalogo;
@@ -78,28 +74,18 @@ abstract class AbstractControllerTest {
 	 * falham por um motivo que nada tem a ver com o que estao verificando —
 	 * foi exatamente o que aconteceu na primeira execucao. Dar a cada
 	 * requisicao a sua chave isola os baldes; o limite em si tem teste proprio,
-	 * onde o IP e fixo de proposito.
+	 * onde o IP e fixo de proposito. Ver {@link RequisicaoDaBorda}.
 	 */
 	protected static MockHttpServletRequestBuilder postJson(String url, String corpo) {
-		return post(url)
+		return RequisicaoDaBorda.comIpProprio(post(url))
 				.with(csrf())
-				.header(CF_CONNECTING_IP, ipUnico())
 				.contentType(MediaType.APPLICATION_JSON)
 				.content(corpo);
 	}
 
 	/** GET com IP novo, pelo mesmo motivo. */
 	protected static MockHttpServletRequestBuilder getComIpProprio(String url) {
-		return get(url).header(CF_CONNECTING_IP, ipUnico());
-	}
-
-	/**
-	 * Um UUID e nao um IP sorteado: o resolvedor nao valida o formato, usa o
-	 * valor so como chave, e um octeto aleatorio colidiria de vez em quando —
-	 * produzindo um 429 intermitente, o pior tipo de teste instavel.
-	 */
-	private static String ipUnico() {
-		return "teste-" + UUID.randomUUID();
+		return RequisicaoDaBorda.comIpProprio(get(url));
 	}
 
 }

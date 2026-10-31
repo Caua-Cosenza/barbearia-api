@@ -33,8 +33,23 @@ public final class SegredosDeTeste {
 	public static final String JWT_REFRESH_SECRET =
 			"JWT_REFRESH_SECRET=outro-segredo-de-teste-para-o-refresh-token-32-bytes";
 
+	/**
+	 * O segredo que prova, para o {@code ClientIpResolver}, que a requisicao
+	 * veio da borda.
+	 *
+	 * <p>Esta no contexto de <b>todo</b> teste, e nao so no que verifica a
+	 * resolucao de IP, porque e assim que as classes base conseguem dar um IP
+	 * proprio a cada requisicao: sem o token, o {@code X-Edge-Client-IP} e
+	 * ignorado e todas as requisicoes da suite caem no mesmo balde.
+	 */
+	public static final String TOKEN_DA_BORDA =
+			"segredo-de-borda-para-teste-com-mais-de-32-caracteres";
+
+	public static final String EDGE_TOKEN = "EDGE_TOKEN=" + TOKEN_DA_BORDA;
+
 	/** Tudo que o contexto precisa, pronto para o {@code properties}. */
-	public static final String[] TODOS = { ENCRYPTION_KEY, JWT_SECRET, JWT_REFRESH_SECRET };
+	public static final String[] TODOS =
+			{ ENCRYPTION_KEY, JWT_SECRET, JWT_REFRESH_SECRET, EDGE_TOKEN };
 
 	private SegredosDeTeste() {
 	}

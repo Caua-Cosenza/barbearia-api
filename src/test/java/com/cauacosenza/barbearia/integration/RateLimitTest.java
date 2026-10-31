@@ -4,8 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
-import java.util.UUID;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,13 +20,17 @@ import tools.jackson.databind.JsonNode;
  * sao compartilhados entre testes — sem isolar, a ordem de execucao mudaria o
  * resultado.
  *
+ * <p>As requisicoes se apresentam como vindas da borda ({@code X-Edge-Token} +
+ * {@code X-Edge-Client-IP}), que e o unico jeito de escolher o IP visto pelo
+ * {@code ClientIpResolver}. Qual cabecalho vira a chave em cada cenario e
+ * assunto de {@link ResolucaoDeIpDoClienteTest}; aqui o que se mede sao os
+ * limites.
+ *
  * <p>Nao ha teste de "o balde se recompoe depois de um minuto": seria um
  * minuto de espera real por asercao. A reposicao e configuracao do Bucket4j
  * ({@code refillIntervally}), nao logica desta aplicacao.
  */
 class RateLimitTest extends AbstractPostgresIntegrationTest {
-
-	private static final String CF_CONNECTING_IP = "CF-Connecting-IP";
 
 	/** O balde global do {@code index.ts} do Node. */
 	private static final int LIMITE_GLOBAL = 30;
@@ -42,7 +44,7 @@ class RateLimitTest extends AbstractPostgresIntegrationTest {
 	@Test
 	@DisplayName("criacao de agendamento: o 11.o pedido do mesmo IP leva 429")
 	void baldeDeAgendamento() throws Exception {
-		String ip = ipDeTeste();
+		String ip = RequisicaoDaBorda.proximoIp();
 
 		// Os 10 primeiros passam pelo filtro. Falham depois, por falta de
 		// dados -- o que nao importa: o que se mede aqui e quem passou do
@@ -71,15 +73,15 @@ class RateLimitTest extends AbstractPostgresIntegrationTest {
 	@Test
 	@DisplayName("catalogo: o 31.o pedido do mesmo IP leva 429")
 	void baldeGlobal() throws Exception {
-		String ip = ipDeTeste();
+		String ip = RequisicaoDaBorda.proximoIp();
 
 		for (int i = 1; i <= LIMITE_GLOBAL; i++) {
-			mvc.perform(get("/api/v1/services").header(CF_CONNECTING_IP, ip))
+			mvc.perform(catalogoDe(ip))
 					.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
 							.status().isOk());
 		}
 
-		mvc.perform(get("/api/v1/services").header(CF_CONNECTING_IP, ip))
+		mvc.perform(catalogoDe(ip))
 				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
 						.status().isTooManyRequests());
 	}
@@ -87,7 +89,7 @@ class RateLimitTest extends AbstractPostgresIntegrationTest {
 	@Test
 	@DisplayName("os baldes sao por rota: estourar o de agendamento nao fecha o catalogo")
 	void baldesIndependentes() throws Exception {
-		String ip = ipDeTeste();
+		String ip = RequisicaoDaBorda.proximoIp();
 
 		for (int i = 0; i <= LIMITE_AGENDAMENTO; i++) {
 			mvc.perform(agendamentoDe(ip));
@@ -97,14 +99,14 @@ class RateLimitTest extends AbstractPostgresIntegrationTest {
 				.isEqualTo(429);
 
 		// O global, do mesmo IP, continua intacto.
-		assertThat(mvc.perform(get("/api/v1/services").header(CF_CONNECTING_IP, ip))
-				.andReturn().getResponse().getStatus()).isEqualTo(200);
+		assertThat(mvc.perform(catalogoDe(ip)).andReturn().getResponse().getStatus())
+				.isEqualTo(200);
 	}
 
 	@Test
 	@DisplayName("IPs diferentes tem baldes diferentes — e o que o Node NAO faz")
 	void baldePorIp() throws Exception {
-		String saturado = ipDeTeste();
+		String saturado = RequisicaoDaBorda.proximoIp();
 		for (int i = 0; i <= LIMITE_AGENDAMENTO; i++) {
 			mvc.perform(agendamentoDe(saturado));
 		}
@@ -114,52 +116,54 @@ class RateLimitTest extends AbstractPostgresIntegrationTest {
 		// Outro cliente nao paga pelo primeiro. No Node isto falharia: o
 		// Fastify nao tem trustProxy ligado, entao req.ip e o endereco do
 		// proxy do Railway e todos os clientes dividem um unico balde.
-		assertThat(mvc.perform(agendamentoDe(ipDeTeste())).andReturn().getResponse().getStatus())
-				.isNotEqualTo(429);
+		assertThat(mvc.perform(agendamentoDe(RequisicaoDaBorda.proximoIp()))
+				.andReturn().getResponse().getStatus()).isNotEqualTo(429);
 	}
 
 	@Test
-	@DisplayName("X-Forwarded-For serve de chave quando nao ha CF-Connecting-IP")
-	void usaForwardedForComoSegundaOpcao() throws Exception {
-		String cliente = ipDeTeste();
-		// "cliente, proxy1, proxy2": a origem e a primeira entrada.
-		String cabecalho = cliente + ", 10.0.0.1, 10.0.0.2";
+	@DisplayName("sem o token da borda, a chave vem da ultima entrada do X-Forwarded-For")
+	void usaForwardedForQuandoNaoHaTokenDaBorda() throws Exception {
+		String cliente = RequisicaoDaBorda.proximoIp();
+		// "proxy1, proxy2, cliente": a ultima entrada e quem abriu a conexao
+		// com o proxy mais proximo, e e a unica que o cliente nao escreveu.
+		String cabecalho = "10.0.0.1, 10.0.0.2, " + cliente;
 
 		for (int i = 0; i <= LIMITE_AGENDAMENTO; i++) {
-			mvc.perform(agendamentoCom("X-Forwarded-For", cabecalho));
+			mvc.perform(agendamentoComForwardedFor(cabecalho));
 		}
-		assertThat(mvc.perform(agendamentoCom("X-Forwarded-For", cabecalho))
+		assertThat(mvc.perform(agendamentoComForwardedFor(cabecalho))
 				.andReturn().getResponse().getStatus()).isEqualTo(429);
 
-		// O mesmo cliente por tras de outros proxies cai no mesmo balde.
-		assertThat(mvc.perform(agendamentoCom("X-Forwarded-For", cliente + ", 10.9.9.9"))
+		// O mesmo par, atras de outra lista de proxies, cai no mesmo balde.
+		assertThat(mvc.perform(agendamentoComForwardedFor("10.9.9.9, " + cliente))
 				.andReturn().getResponse().getStatus()).isEqualTo(429);
 	}
 
 	@Test
-	@DisplayName("CF-Connecting-IP tem precedencia sobre X-Forwarded-For")
-	void cloudflareVenceForwardedFor() throws Exception {
-		String cloudflare = ipDeTeste();
-		String forjado = ipDeTeste();
+	@DisplayName("o token da borda tem precedencia sobre o X-Forwarded-For")
+	void bordaVenceForwardedFor() throws Exception {
+		String daBorda = RequisicaoDaBorda.proximoIp();
 
 		for (int i = 0; i <= LIMITE_AGENDAMENTO; i++) {
-			mvc.perform(agendamentoDe(cloudflare).header("X-Forwarded-For", forjado));
+			mvc.perform(agendamentoDe(daBorda)
+					.header("X-Forwarded-For", RequisicaoDaBorda.proximoIp()));
 		}
 
-		// Trocar so o X-Forwarded-For nao escapa do balde: o Cloudflare
-		// sobrescreve o CF-Connecting-IP e e nele que se confia primeiro.
-		assertThat(mvc.perform(agendamentoDe(cloudflare).header("X-Forwarded-For", ipDeTeste()))
+		// Trocar so o X-Forwarded-For nao escapa do balde: com o token
+		// conferindo, nenhum outro cabecalho e consultado.
+		assertThat(mvc.perform(agendamentoDe(daBorda)
+				.header("X-Forwarded-For", RequisicaoDaBorda.proximoIp()))
 				.andReturn().getResponse().getStatus()).isEqualTo(429);
 	}
 
 	@Test
 	@DisplayName("/actuator/health fica fora do limite")
 	void healthNaoEhLimitado() throws Exception {
-		String ip = ipDeTeste();
+		String ip = RequisicaoDaBorda.proximoIp();
 		// O healthcheck do container bate a cada poucos segundos, sempre do
 		// mesmo IP: limita-lo derrubaria o container que ele deveria vigiar.
 		for (int i = 0; i < LIMITE_GLOBAL + 5; i++) {
-			mvc.perform(get("/actuator/health").header(CF_CONNECTING_IP, ip))
+			mvc.perform(RequisicaoDaBorda.comIp(get("/actuator/health"), ip))
 					.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
 							.status().isOk());
 		}
@@ -169,13 +173,21 @@ class RateLimitTest extends AbstractPostgresIntegrationTest {
 	// Apoio
 	// =======================================================================
 
-	private MockHttpServletRequestBuilder agendamentoDe(String ip) {
-		return agendamentoCom(CF_CONNECTING_IP, ip);
+	private static MockHttpServletRequestBuilder catalogoDe(String ip) {
+		return RequisicaoDaBorda.comIp(get("/api/v1/services"), ip);
 	}
 
-	private MockHttpServletRequestBuilder agendamentoCom(String cabecalho, String valor) {
+	private static MockHttpServletRequestBuilder agendamentoDe(String ip) {
+		return RequisicaoDaBorda.comIp(agendamento(), ip);
+	}
+
+	/** Um agendamento que NAO se apresenta como vindo da borda. */
+	private static MockHttpServletRequestBuilder agendamentoComForwardedFor(String valor) {
+		return agendamento().header("X-Forwarded-For", valor);
+	}
+
+	private static MockHttpServletRequestBuilder agendamento() {
 		return post("/api/v1/appointments/public")
-				.header(cabecalho, valor)
 				.contentType(MediaType.APPLICATION_JSON)
 				.content("""
 						{
@@ -186,11 +198,6 @@ class RateLimitTest extends AbstractPostgresIntegrationTest {
 						  "guestPhone": "5522999990000"
 						}
 						""");
-	}
-
-	/** Chave unica por teste: os baldes vivem no Redis e sobrevivem a suite. */
-	private static String ipDeTeste() {
-		return "teste-" + UUID.randomUUID();
 	}
 
 }

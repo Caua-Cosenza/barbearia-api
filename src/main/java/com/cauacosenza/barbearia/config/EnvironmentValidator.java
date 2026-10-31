@@ -46,6 +46,9 @@ public class EnvironmentValidator implements BeanFactoryPostProcessor, Environme
 
 	private static final int JWT_SECRET_MIN_LENGTH = 32;
 
+	/** Mesmo piso dos segredos de JWT: 32 caracteres. */
+	private static final int EDGE_TOKEN_MIN_LENGTH = 32;
+
 	/** AES-256 usa chave de 32 bytes, que em hexadecimal sao 64 caracteres. */
 	private static final int ENCRYPTION_KEY_HEX_LENGTH = 64;
 
@@ -86,6 +89,19 @@ public class EnvironmentValidator implements BeanFactoryPostProcessor, Environme
 				EnvironmentValidator::isOriginList,
 				"deve conter uma ou mais URLs http/https validas separadas por virgula");
 
+		// O EDGE_TOKEN e o segredo que o ClientIpResolver usa para saber se a
+		// requisicao veio da borda. Obrigatorio em producao: sem ele o
+		// resolvedor cai no fallback, e no fallback os visitantes atras da
+		// Cloudflare dividem poucos baldes de rate limit, porque a ultima
+		// entrada do X-Forwarded-For passa a ser um IP de saida DA
+		// CLOUDFLARE. Em desenvolvimento nao ha borda nenhuma no caminho e o
+		// fallback e o comportamento certo, entao a variavel e opcional.
+		if (isProducao()) {
+			requireWith("EDGE_TOKEN", problems,
+					value -> value.length() >= EDGE_TOKEN_MIN_LENGTH,
+					"deve ter no minimo " + EDGE_TOKEN_MIN_LENGTH + " caracteres");
+		}
+
 		// FRONTEND_URL, EVOLUTION_API_URL, EVOLUTION_API_KEY,
 		// EVOLUTION_INSTANCE_NAME e BARBER_PHONE sao opcionais e nao
 		// participam da validacao de startup.
@@ -93,6 +109,17 @@ public class EnvironmentValidator implements BeanFactoryPostProcessor, Environme
 		if (!problems.isEmpty()) {
 			throw new IllegalStateException(buildMessage(problems));
 		}
+	}
+
+	/**
+	 * O perfil ativo e {@code prod}?
+	 *
+	 * <p>Esta classe ja nao roda no perfil {@code test}; o que falta separar e
+	 * {@code dev} de {@code prod}, porque ha variavel que so faz sentido
+	 * quando existe uma borda na frente da aplicacao.
+	 */
+	private boolean isProducao() {
+		return this.environment.matchesProfiles("prod");
 	}
 
 	private void require(String name, List<String> problems) {

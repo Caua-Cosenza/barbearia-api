@@ -126,6 +126,13 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
 		// Sem o IP no log nao da para distinguir ataque de cliente legitimo
 		// preso num loop de retry.
+		//
+		// O valor e sempre um literal de IP: o ClientIpResolver valida tudo
+		// que vem de cabecalho antes de devolver, e cai para o endereco do
+		// socket quando nao e. Isso importa aqui porque o valor vinha de
+		// cabecalho sem validacao nenhuma, e um "\n" no meio dele abria linha
+		// nova no log -- qualquer coisa podia ser escrita como se fosse um
+		// registro da aplicacao.
 		log.warn("Rate limit estourado: balde={} ip={} rota={}", balde.nome(), ip,
 				requisicao.getRequestURI());
 		responder429(resposta);

@@ -8,8 +8,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
-import java.util.UUID;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -61,14 +59,12 @@ import tools.jackson.databind.ObjectMapper;
  * teste.
  */
 @SpringBootTest(properties = { SegredosDeTeste.ENCRYPTION_KEY,
-		SegredosDeTeste.JWT_SECRET, SegredosDeTeste.JWT_REFRESH_SECRET })
+		SegredosDeTeste.JWT_SECRET, SegredosDeTeste.JWT_REFRESH_SECRET,
+		SegredosDeTeste.EDGE_TOKEN })
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import(TestcontainersConfiguration.class)
 public abstract class AbstractPostgresIntegrationTest {
-
-	/** Cabecalho que o {@code ClientIpResolver} consulta primeiro. */
-	private static final String CF_CONNECTING_IP = "CF-Connecting-IP";
 
 	/** A mesma chave do {@code @SpringBootTest} acima, para uso direto. */
 	protected static final String TEST_KEY = SegredosDeTeste.CHAVE_DE_CRIPTOGRAFIA;
@@ -119,39 +115,28 @@ public abstract class AbstractPostgresIntegrationTest {
 	// =======================================================================
 	// Requisicoes HTTP
 	//
-	// Cada requisicao leva um "IP" proprio no CF-Connecting-IP porque o rate
-	// limit e real nestes testes: a criacao de agendamento tem balde de 10 por
-	// minuto, e uma classe de teste faz mais do que isso. Sem variar a chave,
-	// os ultimos testes recebem 429 por um motivo que nada tem a ver com o que
-	// verificam. O valor e um UUID e nao um IP sorteado: o resolvedor nao
-	// valida o formato e um octeto aleatorio colidiria de vez em quando,
-	// produzindo falha intermitente.
+	// Cada requisicao se apresenta como vinda da borda, com um IP proprio.
+	// O porque esta em RequisicaoDaBorda.
 	// =======================================================================
 
 	protected static MockHttpServletRequestBuilder postJson(String url, String corpo) {
-		return post(url)
-				.header(CF_CONNECTING_IP, chaveDeRateLimitUnica())
+		return RequisicaoDaBorda.comIpProprio(post(url))
 				.contentType(MediaType.APPLICATION_JSON)
 				.content(corpo);
 	}
 
 	protected static MockHttpServletRequestBuilder putJson(String url, String corpo) {
-		return put(url)
-				.header(CF_CONNECTING_IP, chaveDeRateLimitUnica())
+		return RequisicaoDaBorda.comIpProprio(put(url))
 				.contentType(MediaType.APPLICATION_JSON)
 				.content(corpo);
 	}
 
 	protected static MockHttpServletRequestBuilder getComIpProprio(String url) {
-		return get(url).header(CF_CONNECTING_IP, chaveDeRateLimitUnica());
+		return RequisicaoDaBorda.comIpProprio(get(url));
 	}
 
 	protected static MockHttpServletRequestBuilder deleteComIpProprio(String url) {
-		return delete(url).header(CF_CONNECTING_IP, chaveDeRateLimitUnica());
-	}
-
-	private static String chaveDeRateLimitUnica() {
-		return "teste-" + UUID.randomUUID();
+		return RequisicaoDaBorda.comIpProprio(delete(url));
 	}
 
 	// =======================================================================
