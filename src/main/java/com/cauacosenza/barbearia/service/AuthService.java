@@ -125,6 +125,19 @@ public class AuthService {
 
 		// Rotacao: o token usado morre aqui.
 		this.refreshTokens.delete(armazenado);
+		// O mutante que remove este flush sobrevive, e o status honesto e
+		// NENHUM CENARIO DISTINGUIVEL ENCONTRADO -- nao "equivalente
+		// provado". A diferenca de confianca importa: os sobreviventes de
+		// SlotCalculator 175/180 tem demonstracao logica, e este tem apenas
+		// uma busca sem resultado. O que foi procurado, e nao achado: leitura
+		// de refresh_tokens depois do delete e antes do commit (o
+		// emitirSessao so insere); colisao da insercao nova com a linha ainda
+		// pendente de remocao, que exigiria hash igual, e o hash e de um
+		// token recem-emitido; e visibilidade da linha por outra transacao,
+		// que nao muda, porque antes do commit nenhuma das duas versoes a
+		// expoe. Se alguem achar o cenario, o flush deixa de ser redundante e
+		// este comentario e que estava errado. O delete da linha acima, por
+		// outro lado, tem teste: rotacaoInvalidaOAnterior o mata.
 		this.refreshTokens.flush();
 
 		return emitirSessao(usuario, null);
