@@ -422,6 +422,41 @@
 			medicao. O outro equivalente conhecido e a linha 135, a guarda de
 			data no passado, inalcancavel por HTTP.
 
+			COMO LER `numberOfTestsRun` no mutations.xml. O numero significa
+			coisas diferentes conforme o status do mutante. Para um mutante
+			MORTO o PIT para no primeiro teste que mata, e dai tantos mutantes
+			com n=1. Para um SOBREVIVENTE ele roda todos os testes que acredita
+			cobrirem a linha, entao n e a contagem completa de cobertura.
+			Consequencia pratica: num sobrevivente, n baixo demais em relacao a
+			outros metodos do mesmo arquivo e sinal de ATRIBUICAO INCOMPLETA, e
+			nao de codigo pouco exercitado.
+
+			CODIGO DE INICIALIZACAO E MAL MEDIDO. O PIT atribui cobertura por
+			execucao de teste. Codigo que roda na construcao do contexto do
+			Spring executa uma vez, o contexto e cacheado, e os testes
+			seguintes nunca pisam na linha: a cobertura fica atribuida so aos
+			poucos testes que provocaram a criacao de cada contexto.
+
+			Caso medido: `JwtService.chaveDe` com n=7, aproximadamente o numero
+			de contextos distintos da suite, contra n=193 em
+			`JwtCookieAuthenticationFilter` — mesmo arquivo de caminho de
+			autenticacao, mesma suite. Os 5 sobreviventes de `chaveDe` eram
+			"NAO MEDIDOS" e nao "nao protegidos": o teste que os mata
+			(`AuthIntegrationTest.logar`, aplicado a mao) nunca foi rodado
+			contra eles.
+
+			Contraprova no mesmo relatorio: o `CryptoService` tambem decodifica
+			chave na construcao, e os 5 mutantes dele MORRERAM, porque o
+			`CryptoServiceTest` faz `new CryptoService(TEST_KEY)` no corpo do
+			teste.
+
+			A SAIDA e sempre a mesma: construir a classe diretamente num teste
+			unitario, fora do contexto. Qualquer `@Configuration` ou construtor
+			que entre no escopo do PIT no futuro cai nessa armadilha, e ela
+			vale tambem para os mutantes MORTOS em codigo de boot — o
+			denominador deles e igualmente irreal, porque foram mortos por um
+			dos poucos testes que criam contexto.
+
 			E NAO HABILITAR `junit.jupiter.execution.parallel.enabled`, pelo
 			mesmo motivo: threads do JUnit dentro de uma JVM so dividem o
 			mesmo Postgres tanto quanto minions de JVMs diferentes. O caminho
