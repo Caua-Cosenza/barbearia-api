@@ -80,9 +80,31 @@ public class EvolutionConfig {
 	 * cliente, e qualquer {@code toString()} ou dump de bean em um
 	 * {@code /actuator/beans} mal exposto o imprimiria.
 	 */
-	private static RestClient restClientDaEvolution(String url) {
+	public static RestClient restClientDaEvolution(String url) {
+		return restClientDaEvolution(url, TIMEOUT_DE_LEITURA);
+	}
+
+	/**
+	 * O mesmo cliente, com o timeout de leitura escolhido.
+	 *
+	 * <p><b>Publico de proposito.</b> O {@code EvolutionApiClientTest}
+	 * construia o seu proprio {@link RestClient} com uma copia desta
+	 * configuracao, e copia de configuracao de transporte e armadilha: a
+	 * divergencia de {@code Transfer-Encoding} e de {@code Upgrade: h2c} que
+	 * motivou este metodo passaria verde no teste e iria para producao do
+	 * mesmo jeito. O teste agora chama isto.
+	 */
+	public static RestClient restClientDaEvolution(String url, Duration timeoutDeLeitura) {
 		HttpClient jdk = HttpClient.newBuilder()
 				.connectTimeout(TIMEOUT_DE_CONEXAO)
+				// HTTP/1.1 explicito. O default do HttpClient e HTTP_2, e sobre
+				// texto claro isso nao fala HTTP/2: fala HTTP/1.1 com
+				// `Upgrade: h2c` e `HTTP2-Settings` em toda requisicao,
+				// pedindo promocao. O Node nao manda nada disso, e a tentativa
+				// de upgrade tem efeito observado: contra um WireMock sem
+				// `--disable-http2-plain` o corpo chegava VAZIO. Nao e
+				// hipotese sobre a Evolution, e um servidor real que engasgou.
+				.version(HttpClient.Version.HTTP_1_1)
 				// Nunca seguir redirecionamento: um 301 de um host comprometido
 				// levaria a mensagem (e a apikey no cabecalho) para outro
 				// destino.
@@ -90,11 +112,19 @@ public class EvolutionConfig {
 				.build();
 
 		JdkClientHttpRequestFactory fabrica = new JdkClientHttpRequestFactory(jdk);
-		fabrica.setReadTimeout(TIMEOUT_DE_LEITURA);
+		fabrica.setReadTimeout(timeoutDeLeitura);
 
 		return RestClient.builder()
 				.baseUrl(url)
 				.requestFactory(fabrica)
+				// `Accept: */*` e o que o fetch do Node manda. Ausente seria
+				// equivalente por RFC — sem preferencia significa qualquer
+				// tipo —, mas o criterio desta migracao e igualdade
+				// verificada, nao equivalencia presumida: o header e
+				// replicavel, entao e replicado. O que NAO se replica e o
+				// `Accept: application/json` que pareceria mais correto aqui;
+				// ele afastaria do Node em vez de aproximar.
+				.defaultHeader("Accept", "*/*")
 				.build();
 	}
 

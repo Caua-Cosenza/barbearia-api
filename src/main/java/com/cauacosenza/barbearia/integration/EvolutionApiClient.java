@@ -6,6 +6,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestClient;
 
+import tools.jackson.databind.ObjectMapper;
+
 import com.cauacosenza.barbearia.service.ChatMessagePort;
 import com.cauacosenza.barbearia.service.MensagensDeWhatsApp;
 
@@ -70,6 +72,41 @@ public class EvolutionApiClient implements ChatMessagePort {
 	/** O cabecalho que a Evolution usa — minusculo, e nao Authorization. */
 	private static final String CABECALHO_API_KEY = "apikey";
 
+	/**
+	 * Serializa o corpo <b>antes</b> do envio, para que o tamanho seja
+	 * conhecido.
+	 *
+	 * <h2>Por que nao deixar o RestClient serializar</h2>
+	 *
+	 * <p>Passando o record direto em {@code body(...)}, o converter do Jackson
+	 * escreve no {@code OutputStream} da requisicao sem saber o tamanho final,
+	 * e o {@code JdkClientHttpRequest} do Spring so informa o tamanho ao
+	 * {@code BodyPublisher} quando {@code HttpHeaders.getContentLength()} ja e
+	 * maior que zero — caso contrario chama
+	 * {@code BodyPublishers.fromPublisher(publisher)} sem comprimento, e o JDK
+	 * manda {@code Transfer-Encoding: chunked}. Nao e um
+	 * {@code BodyPublishers.ofString} que esqueceu de medir: nao ha
+	 * {@code ofString} nenhum no caminho.
+	 *
+	 * <p>Com {@code byte[]} o {@code ByteArrayHttpMessageConverter} devolve
+	 * {@code bytes.length} em {@code getContentLength}, o header entra, e o
+	 * publisher sai com comprimento — {@code Content-Length}, como o Node.
+	 *
+	 * <p><b>{@code byte[]} e nao {@code String} de proposito.</b> O
+	 * {@code StringHttpMessageConverter} tem charset default, e o
+	 * {@code addDefaultHeaders} o acrescentaria ao {@code Content-Type},
+	 * trocando {@code application/json} por
+	 * {@code application/json;charset=UTF-8} — divergencia nova no lugar da
+	 * que se quer fechar. O converter de {@code byte[]} nao tem charset
+	 * default e deixa o {@code Content-Type} como foi pedido.
+	 *
+	 * <p>Mapper proprio, e nao o da aplicacao: o corpo e um record de dois
+	 * campos {@code String}, para o qual todo mapper produz os mesmos bytes, e
+	 * assim nenhum customizador global futuro muda, sem querer, o que a
+	 * Evolution recebe.
+	 */
+	private static final ObjectMapper JSON = new ObjectMapper();
+
 	private final RestClient http;
 
 	private final String instancia;
@@ -91,7 +128,7 @@ public class EvolutionApiClient implements ChatMessagePort {
 					.uri("/message/sendText/{instancia}", this.instancia)
 					.contentType(MediaType.APPLICATION_JSON)
 					.header(CABECALHO_API_KEY, this.apiKey)
-					.body(new EnvioDeTexto(numero, mensagem.texto()))
+					.body(JSON.writeValueAsBytes(new EnvioDeTexto(numero, mensagem.texto())))
 					// toBodilessEntity e nao body(String.class): a resposta da
 					// Evolution ecoa a mensagem enviada, e nao ha motivo para
 					// trazer isso para a memoria da aplicacao.

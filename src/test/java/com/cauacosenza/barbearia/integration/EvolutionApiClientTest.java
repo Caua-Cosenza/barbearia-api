@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -23,9 +22,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
+import com.cauacosenza.barbearia.config.EvolutionConfig;
 import com.cauacosenza.barbearia.service.ChatMessagePort;
 import com.cauacosenza.barbearia.service.ChatMessagePort.ChatMessage;
 
@@ -98,6 +97,69 @@ class EvolutionApiClientTest {
 			assertThat(recebidas).hasSize(1);
 			assertThat(recebidas.get(0).metodo()).isEqualTo("POST");
 			assertThat(recebidas.get(0).caminho()).isEqualTo("/message/sendText/barbearia");
+		}
+
+		@Test
+		@DisplayName("vai com Content-Length, não com Transfer-Encoding: chunked")
+		void envelopeComTamanho() {
+			// O Node manda Content-Length porque o fetch serializa a string
+			// antes. O Java mandava chunked, e isso nao e cosmetico: contra um
+			// WireMock sem --disable-http2-plain o corpo chegava vazio.
+			adaptador.enviar(new ChatMessage("5522999990000", "oi"));
+			Requisicao pedido = recebidas.get(0);
+
+			assertThat(pedido.cabecalho("transfer-encoding")).isNull();
+			assertThat(pedido.cabecalho("content-length"))
+					.isEqualTo(String.valueOf(pedido.corpo().getBytes(StandardCharsets.UTF_8).length));
+		}
+
+		@Test
+		@DisplayName("não pede upgrade para h2c")
+		void semUpgrade() {
+			// O default do HttpClient e HTTP_2, e sobre texto claro isso vira
+			// um pedido de promocao em TODA requisicao. O Node nao manda nada
+			// disso.
+			adaptador.enviar(new ChatMessage("5522999990000", "oi"));
+			Requisicao pedido = recebidas.get(0);
+
+			assertThat(pedido.cabecalho("upgrade")).isNull();
+			assertThat(pedido.cabecalho("http2-settings")).isNull();
+			assertThat(pedido.cabecalho("connection"))
+					.satisfiesAnyOf(valor -> assertThat(valor).isNull(),
+							valor -> assertThat(valor).doesNotContain("Upgrade"));
+		}
+
+		@Test
+		@DisplayName("manda Accept: */* , como o fetch do Node")
+		void accept() {
+			// Ultimo header replicavel que diferia. Ausente seria equivalente
+			// por RFC, mas equivalencia presumida nao e o criterio aqui.
+			adaptador.enviar(new ChatMessage("5522999990000", "oi"));
+			assertThat(recebidas.get(0).cabecalho("accept")).isEqualTo("*/*");
+		}
+
+		@Test
+		@DisplayName("o Content-Type fica application/json puro, sem charset")
+		void contentTypeSemCharset() {
+			// Serializar antes do envio e o que da o Content-Length, mas se o
+			// corpo fosse String em vez de byte[] o converter acrescentaria
+			// ;charset=UTF-8 aqui — trocaria uma divergencia por outra.
+			adaptador.enviar(new ChatMessage("5522999990000", "oi"));
+			assertThat(recebidas.get(0).cabecalho("content-type")).isEqualTo("application/json");
+		}
+
+		@Test
+		@DisplayName("o corpo chega inteiro, com acento e emoji")
+		void corpoCompleto() {
+			String texto = "Olá, *Maria*! 🎉\nAté logo! 💈";
+			adaptador.enviar(new ChatMessage("5522999990000", texto));
+			Requisicao pedido = recebidas.get(0);
+
+			assertThat(pedido.corpoJson().get("text").asString()).isEqualTo(texto);
+			// O tamanho declarado tem que bater com o que chegou: um
+			// Content-Length errado truncaria o texto silenciosamente.
+			assertThat(Integer.parseInt(pedido.cabecalho("content-length")))
+					.isEqualTo(pedido.corpo().getBytes(StandardCharsets.UTF_8).length);
 		}
 
 		@Test
@@ -329,20 +391,20 @@ class EvolutionApiClientTest {
 	// Apoio
 	// =======================================================================
 
+	/**
+	 * O cliente vem de {@link EvolutionConfig}, nao de uma copia local.
+	 *
+	 * <p>Este metodo ja montou o seu proprio {@link RestClient} repetindo a
+	 * configuracao de producao, e foi assim que a divergencia de transporte
+	 * passou despercebida: o teste media o transporte do teste. Agora qualquer
+	 * mudanca de {@code HttpClient} em producao chega aqui sozinha.
+	 */
 	private static RestClient clienteCom(String url) {
-		return clienteCom(url, Duration.ofSeconds(5));
+		return EvolutionConfig.restClientDaEvolution(url);
 	}
 
 	private static RestClient clienteCom(String url, Duration timeoutDeLeitura) {
-		HttpClient jdk = HttpClient.newBuilder()
-				.connectTimeout(Duration.ofSeconds(2))
-				.followRedirects(HttpClient.Redirect.NEVER)
-				.build();
-
-		JdkClientHttpRequestFactory fabrica = new JdkClientHttpRequestFactory(jdk);
-		fabrica.setReadTimeout(timeoutDeLeitura);
-
-		return RestClient.builder().baseUrl(url).requestFactory(fabrica).build();
+		return EvolutionConfig.restClientDaEvolution(url, timeoutDeLeitura);
 	}
 
 	private void atender(HttpExchange troca) throws IOException {
