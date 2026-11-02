@@ -11,6 +11,16 @@ build/
 .env
 .env.*
 !.env.example
+# O .env.dev ja cai em `.env.*`; esta linha e explicita de proposito, para que
+# quem leia nao precise deduzir que o glob o cobre.
+.env.dev
+# Os `.example` sao modelos sem segredo e PRECISAM ser versionados -- sem esta
+# excecao o `.env.*` acima os engoliria junto com os arquivos reais.
+!.env.dev.example
+
+# --- Ambiente local do start-dev.ps1 ----------------------------------------
+# Logs, PIDs e os mappings do WireMock. Tudo recriavel; nada versionado.
+.dev-run/
 
 # --- Dumps de banco ---------------------------------------------------------
 # Um dump revela a estrutura do banco de producao. As migrations ficam
