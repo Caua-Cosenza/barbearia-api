@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.cauacosenza.barbearia.domain.entity.Appointment;
 import com.cauacosenza.barbearia.domain.enums.AppointmentStatus;
 import com.cauacosenza.barbearia.domain.exception.RecursoNaoEncontradoException;
+import com.cauacosenza.barbearia.domain.exception.TransicaoDeStatusInvalidaException;
 import com.cauacosenza.barbearia.dto.request.UpdateAppointmentStatusRequest;
 import com.cauacosenza.barbearia.dto.response.AdminAppointmentResponse;
 import com.cauacosenza.barbearia.dto.response.AdminStatsResponse;
@@ -111,6 +112,16 @@ public class AdminService {
 	public UpdateAppointmentStatusResponse mudarStatus(String id, UpdateAppointmentStatusRequest pedido) {
 		Appointment agendamento = this.appointments.findById(id)
 				.orElseThrow(RecursoNaoEncontradoException::agendamento);
+
+		// Concluir atendimento que ainda nao comecou NAO e so um registro
+		// errado: COMPLETED nao esta em OCUPAM_AGENDA, entao o horario volta
+		// para a grade e e vendido a um segundo cliente -- que aparece na porta
+		// no mesmo minuto que o primeiro. O erro de um clique no painel vira
+		// dois clientes no mesmo horario.
+		if (pedido.status() == AppointmentStatus.COMPLETED
+				&& agendamento.getScheduledAt().isAfter(Instant.now(this.clock))) {
+			throw TransicaoDeStatusInvalidaException.conclusaoAntesDoHorario();
+		}
 
 		agendamento.setStatus(pedido.status());
 		Appointment salvo = this.appointments.saveAndFlush(agendamento);

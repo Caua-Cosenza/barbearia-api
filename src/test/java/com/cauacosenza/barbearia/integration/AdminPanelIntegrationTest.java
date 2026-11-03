@@ -366,6 +366,18 @@ class AdminPanelIntegrationTest extends AbstractPostgresIntegrationTest {
 		void finalizar() throws Exception {
 			String id = agendar(LocalTime.of(10, 20), List.of(corte));
 
+			// O relogio precisa passar do horario marcado. Concluir
+			// atendimento que ainda nao comecou passou a responder 409, porque
+			// COMPLETED nao ocupa agenda e liberaria um horario de fato
+			// vendido. Os dois sentidos da regra estao em
+			// ConclusaoDeAtendimentoTest; aqui so se garante que o caminho
+			// feliz continua feliz.
+			//
+			// Com o relogio adiantado o access token de 15 minutos vence, por
+			// isso a sessao e refeita.
+			BDDMockito.given(clock.instant()).willReturn(Instant.parse("2026-12-15T13:25:00Z"));
+			sessao = logar();
+
 			JsonNode corpo = corpoDe(mudarStatus(id, "COMPLETED").andExpect(status(200)).andReturn());
 
 			assertThat(corpo.get("data").get("id").asString()).isEqualTo(id);
