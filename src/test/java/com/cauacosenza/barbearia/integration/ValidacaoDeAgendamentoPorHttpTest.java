@@ -214,16 +214,45 @@ class ValidacaoDeAgendamentoPorHttpTest extends AbstractPostgresIntegrationTest 
 		}
 
 		@Test
-		@DisplayName("CANARIO: os segundos enviados pelo cliente sao preservados no banco")
-		void segundosSaoPreservados() throws Exception {
-			// 09:37:29 vira scheduled_at com :29 gravado. Nao ha truncamento
-			// para o minuto, muito menos para o ponto de grade.
-			agendar(QUARTA, "09:37:29", corteId).andExpect(status().isCreated());
+		@DisplayName("os segundos enviados pelo cliente sao truncados no minuto")
+		void segundosSaoTruncados() throws Exception {
+			// 09:37:29 e gravado como 09:37:00. O horario quebrado continua
+			// aceito -- isso e outro canario --, mas o segundo nao sobrevive.
+			JsonNode corpo = corpoDe(agendar(QUARTA, "09:37:29", corteId)
+					.andExpect(status().isCreated()));
 
-			String gravado = jdbc.queryForObject(
+			assertThat(jdbc.queryForObject(
 					"SELECT to_char(\"scheduled_at\", 'HH24:MI:SS') FROM \"appointments\"",
-					String.class);
-			assertThat(gravado).endsWith(":37:29");
+					String.class)).isEqualTo("12:37:00");
+
+			// A resposta tambem: o cliente ve o que foi reservado.
+			assertThat(corpo.get("data").get("scheduledAt").asString())
+					.isEqualTo("2026-12-16T12:37:00.000Z");
+		}
+
+		@Test
+		@DisplayName("fracao de segundo tambem desaparece")
+		void fracaoDeSegundoTambem() throws Exception {
+			agendar(QUARTA, "09:37:29.876", corteId).andExpect(status().isCreated());
+
+			assertThat(jdbc.queryForObject(
+					"SELECT to_char(\"scheduled_at\", 'HH24:MI:SS.MS') FROM \"appointments\"",
+					String.class)).isEqualTo("12:37:00.000");
+		}
+
+		@Test
+		@DisplayName("dois pedidos no mesmo minuto, com segundos diferentes, colidem")
+		void mesmoMinutoColide() throws Exception {
+			// Este e o motivo de truncar. Com o segundo preservado, as janelas
+			// [10:00:00, 10:50:00) e [10:00:30, 10:50:30) se sobrepoem e a
+			// constraint pegaria -- mas um pedido as 10:50:00 e outro as
+			// 10:00:30 NAO se sobrepoem pela borda, e dois agendamentos
+			// entrariam em minutos que a grade trata como o mesmo slot.
+			agendar(TERCA, "10:00:00", corteId).andExpect(status().isCreated());
+
+			assertThat(mensagemDe(agendar(TERCA, "10:00:30", corteId)))
+					.isEqualTo("Este horário acabou de ser reservado. Escolha outro.");
+			assertThat(appointments.count()).isEqualTo(1);
 		}
 
 		@Test

@@ -3,6 +3,7 @@ package com.cauacosenza.barbearia.dto.request;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 import jakarta.validation.constraints.Email;
@@ -82,9 +83,30 @@ public record CreatePublicAppointmentRequest(
 	 * para que um uso fora de ordem apareca como defeito de programacao e nao
 	 * como 400 enganoso para o cliente.
 	 */
+	/**
+	 * O instante pedido, <b>truncado no minuto</b>.
+	 *
+	 * <p>Segundo e fracao de segundo sao descartados. Antes,
+	 * {@code 09:37:29} era gravado com o {@code :29}, e o estrago nao e
+	 * cosmetico: a janela que a constraint de exclusao compara passa a comecar
+	 * em segundo quebrado, entao dois pedidos para "as 10:00" que diferissem
+	 * em um segundo nao se sobrepoem pela borda e os dois entram. A grade, que
+	 * so produz {@code HH:MM}, nunca oferece esses horarios, e o painel os
+	 * mostra arredondados — o barbeiro ve dois agendamentos no mesmo minuto
+	 * sem nada que explique.
+	 *
+	 * <p>Truncar e nao recusar porque o segundo nao e informacao: nenhum
+	 * cliente escolhe {@code :29}, e quem mandou tem o minuto como intencao
+	 * obvia. A resposta devolve {@code scheduledAt} ja truncado, entao o que
+	 * foi reservado esta explicito.
+	 *
+	 * <p>Isto <b>nao</b> alinha o horario a ponto de grade: {@code 09:37}
+	 * continua aceito, e essa e outra decisao.
+	 */
 	public Instant scheduledAtInstant() {
 		try {
-			return OffsetDateTime.parse(this.scheduledAt).toInstant();
+			return OffsetDateTime.parse(this.scheduledAt).toInstant()
+					.truncatedTo(ChronoUnit.MINUTES);
 		}
 		catch (DateTimeParseException ex) {
 			throw new IllegalStateException(
