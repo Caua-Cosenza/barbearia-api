@@ -132,6 +132,23 @@ public class Appointment {
 	@Column(name = "cancelled_at")
 	private Instant cancelledAt;
 
+	/**
+	 * Fim <b>real</b> do atendimento, carimbado quando o status vira
+	 * {@code COMPLETED}.
+	 *
+	 * <p>E o que faz o vao seguinte comecar onde o atendimento de fato acabou,
+	 * e nao em {@code scheduledAt + slotDurationMinutes}. Terminar um corte de
+	 * 50 minutos em 30 devolve os outros 20 para a grade.
+	 *
+	 * <p><b>Nulo nao e o mesmo que zero.</b> Um {@code COMPLETED} com
+	 * {@code completedAt} nulo — toda linha anterior a V3 — nao ocupa agenda,
+	 * que e o comportamento de antes da coluna existir. Tratar nulo como "fim
+	 * igual ao inicio" faria agendamentos antigos bloquearem nada e, pior,
+	 * reancorariam o vao no proprio inicio.
+	 */
+	@Column(name = "completed_at")
+	private Instant completedAt;
+
 	@Column(name = "confirmation_sent", nullable = false)
 	private boolean confirmationSent = false;
 

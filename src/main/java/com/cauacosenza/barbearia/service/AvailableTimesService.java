@@ -109,7 +109,7 @@ public class AvailableTimesService {
 		WorkingHours expediente = this.mapper.toWorkingHours(jornada.get());
 
 		List<BookedSlot> ocupados = this.mapper.toBookedSlots(
-				this.appointments.buscarQueOcupamAgenda(
+				this.appointments.buscarQueOcupamAGrade(
 						barbeiro.getId(),
 						this.mapper.toInstantUtc(dia, LocalTime.MIDNIGHT),
 						this.mapper.toInstantUtc(dia.plusDays(1), LocalTime.MIDNIGHT)));

@@ -26,6 +26,31 @@ public interface AppointmentRepository extends JpaRepository<Appointment, String
 	Set<AppointmentStatus> OCUPAM_AGENDA = Set.of(AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED);
 
 	/**
+	 * Os status que entram na formacao da <b>grade de horarios</b>.
+	 *
+	 * <p>E {@link #OCUPAM_AGENDA} mais {@code COMPLETED}, e a diferenca entre
+	 * os dois conjuntos nao e descuido:
+	 *
+	 * <ul>
+	 *   <li>{@code OCUPAM_AGENDA} e o conjunto da <b>constraint de exclusao</b>
+	 *       da V2, que decide se um INSERT colide. Concluido nao colide: o
+	 *       horario ja passou, e recusar insercao por causa dele impediria
+	 *       corrigir historico.
+	 *   <li>{@code OCUPAM_A_GRADE} decide onde a grade RECOMECA. Concluido
+	 *       precisa entrar porque o fim real dele — {@code completed_at} — e a
+	 *       borda do vao seguinte. Sem ele na consulta, a grade continuaria
+	 *       ancorada no fim previsto e os minutos de um atendimento que
+	 *       terminou cedo nunca voltariam.
+	 * </ul>
+	 *
+	 * <p>Um {@code COMPLETED} sem {@code completed_at} vem na consulta e e
+	 * descartado no mapper, que o trata como nao ocupando — o comportamento de
+	 * antes da V3, preservado para as linhas antigas.
+	 */
+	Set<AppointmentStatus> OCUPAM_A_GRADE = Set.of(AppointmentStatus.PENDING,
+			AppointmentStatus.CONFIRMED, AppointmentStatus.COMPLETED);
+
+	/**
 	 * Os agendamentos de um profissional que <b>ocupam agenda</b> dentro de um
 	 * intervalo. E a consulta que alimenta o calculo de horarios livres.
 	 *
@@ -78,6 +103,17 @@ public interface AppointmentRepository extends JpaRepository<Appointment, String
 	 */
 	default List<Appointment> buscarQueOcupamAgenda(String professionalId, Instant inicio, Instant fim) {
 		return buscarPorStatus(professionalId, inicio, fim, OCUPAM_AGENDA);
+	}
+
+	/**
+	 * O que alimenta o calculo de horarios livres. Ver {@link #OCUPAM_A_GRADE}.
+	 *
+	 * @param professionalId profissional
+	 * @param inicio limite inferior, <b>inclusivo</b>
+	 * @param fim limite superior, <b>exclusivo</b>
+	 */
+	default List<Appointment> buscarQueOcupamAGrade(String professionalId, Instant inicio, Instant fim) {
+		return buscarPorStatus(professionalId, inicio, fim, OCUPAM_A_GRADE);
 	}
 
 	/**

@@ -132,6 +132,17 @@ public class AdminService {
 		}
 
 		agendamento.setStatus(pedido.status());
+
+		// O carimbo do fim real. Vai a nulo quando o status sai de COMPLETED
+		// porque um completed_at remanescente continuaria ancorando o vao
+		// seguinte num atendimento que deixou de estar concluido.
+		if (pedido.status() == AppointmentStatus.COMPLETED) {
+			agendamento.setCompletedAt(Instant.now(this.clock));
+		}
+		else {
+			agendamento.setCompletedAt(null);
+		}
+
 		Appointment salvo = this.appointments.saveAndFlush(agendamento);
 
 		return new UpdateAppointmentStatusResponse(salvo.getId(), salvo.getStatus().name());

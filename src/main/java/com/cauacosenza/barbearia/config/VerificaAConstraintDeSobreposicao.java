@@ -95,6 +95,27 @@ public class VerificaAConstraintDeSobreposicao {
 			 WHERE conrelid = 'appointments'::regclass AND contype = 'x'
 			""";
 
+	/** A coluna que a V3 cria. */
+	static final String COLUNA = "completed_at";
+
+	/**
+	 * A coluna de fim real existe?
+	 *
+	 * <p>Mesma perda, mesmo mecanismo: o {@code schema.prisma} do Node nao
+	 * conhece {@code completed_at}, e o {@code db push} a apaga junto com a
+	 * constraint. Sem ela o calculo de horarios volta a ancorar o vao no fim
+	 * PREVISTO, e o atendimento que terminou cedo deixa de devolver os minutos
+	 * — silenciosamente, porque Hibernate com {@code ddl-auto: validate}
+	 * reclamaria... e é justamente por isso que a coluna e verificada aqui
+	 * tambem: o {@code validate} roda ANTES deste bean e derrubaria o boot com
+	 * uma mensagem sobre mapeamento de entidade, nao sobre o que de fato
+	 * aconteceu.
+	 */
+	private static final String CONSULTA_DA_COLUNA = """
+			SELECT column_name FROM information_schema.columns
+			 WHERE table_name = 'appointments' AND column_name = 'completed_at'
+			""";
+
 	private final JdbcTemplate jdbc;
 
 	private final Environment ambiente;
@@ -107,17 +128,21 @@ public class VerificaAConstraintDeSobreposicao {
 	@PostConstruct
 	void verificar() {
 		List<String> exclusoes = this.jdbc.queryForList(CONSULTA, String.class);
-		if (exclusoes.contains(CONSTRAINT)) {
-			log.debug("Constraint {} presente.", CONSTRAINT);
+		boolean temConstraint = exclusoes.contains(CONSTRAINT);
+		boolean temColuna = !this.jdbc.queryForList(CONSULTA_DA_COLUNA, String.class).isEmpty();
+
+		if (temConstraint && temColuna) {
+			log.debug("Constraint {} e coluna {} presentes.", CONSTRAINT, COLUNA);
 			return;
 		}
 
+		String mensagem = mensagem(exclusoes, temConstraint, temColuna);
 		if (this.ambiente.matchesProfiles("prod")) {
-			throw new IllegalStateException(mensagem(exclusoes));
+			throw new IllegalStateException(mensagem);
 		}
-		// Fora de producao a ausencia e esperada em banco antigo, e exigir a
-		// constraint impediria de subir para investigar justamente o problema.
-		log.warn("{}", mensagem(exclusoes));
+		// Fora de producao a ausencia e esperada em banco antigo, e exigir
+		// impediria de subir para investigar justamente o problema.
+		log.warn("{}", mensagem);
 	}
 
 	/**
@@ -128,26 +153,48 @@ public class VerificaAConstraintDeSobreposicao {
 	 * significa; o objetivo e que a primeira linha do log ja diga o que
 	 * aconteceu e o que fazer.
 	 */
-	private static String mensagem(List<String> encontradas) {
-		return """
-				A constraint %s nao existe em "appointments".
+	private static String mensagem(List<String> encontradas, boolean temConstraint, boolean temColuna) {
+		StringBuilder texto = new StringBuilder();
 
-				E ela que impede duas reservas sobrepostas para o mesmo \
-				profissional, e a garantia esta NELA, nao no codigo: sem a \
-				constraint, duas requisicoes simultaneas para o mesmo horario \
-				recebem 201 as duas e o banco fica com duas linhas.
+		if (!temConstraint) {
+			texto.append("""
+					A constraint %s nao existe em "appointments".
 
+					E ela que impede duas reservas sobrepostas para o mesmo \
+					profissional, e a garantia esta NELA, nao no codigo: sem a \
+					constraint, duas requisicoes simultaneas para o mesmo \
+					horario recebem 201 as duas e o banco fica com duas linhas.
+
+					Constraints de exclusao encontradas em "appointments": %s
+					"""
+					.formatted(CONSTRAINT, encontradas.isEmpty() ? "nenhuma" : encontradas));
+		}
+
+		if (!temColuna) {
+			texto.append("""
+					A coluna %s nao existe em "appointments".
+
+					E nela que fica o fim REAL do atendimento. Sem ela o calculo \
+					de horarios volta a ancorar o vao seguinte no fim PREVISTO, \
+					e um corte de 50 minutos terminado em 30 deixa de devolver \
+					os outros 20 para a agenda -- sem erro nenhum, so com a \
+					agenda mais cheia do que deveria.
+					"""
+					.formatted(COLUNA));
+		}
+
+		texto.append("""
 				CAUSA PROVAVEL: um `prisma db push` do backend Node. O \
-				schema.prisma nao conhece esta constraint, entao o push a \
-				remove em silencio -- e o `start` daquele backend e \
-				`prisma db push && node dist/index.js`, ou seja, todo deploy \
-				dele a remove de novo.
+				schema.prisma nao conhece nem a constraint nem a coluna, entao \
+				o push remove as duas em silencio -- e o `start` daquele \
+				backend e `prisma db push && node dist/index.js`, ou seja, todo \
+				deploy dele remove de novo.
 
-				COMO CORRIGIR: reaplicar a V2 (ou so o ALTER TABLE ... ADD \
-				CONSTRAINT dela) e retirar o `db push` do script de start.
+				COMO CORRIGIR: reaplicar a V2 e a V3 (ou so os ALTER TABLE \
+				delas) e retirar o `db push` do script de start. Retirar o \
+				`db push` e pre-requisito do corte.""");
 
-				Constraints de exclusao encontradas em "appointments": %s"""
-				.formatted(CONSTRAINT, encontradas.isEmpty() ? "nenhuma" : encontradas);
+		return texto.toString();
 	}
 
 }

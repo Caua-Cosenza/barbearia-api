@@ -4,22 +4,29 @@ import java.time.LocalTime;
 import java.util.Objects;
 
 /**
- * Um agendamento que ja ocupa a agenda.
- *
- * <p>{@code durationMinutes} e a duracao <b>bruta</b>: a soma das duracoes dos
- * servicos do agendamento, sem teto. O teto de
- * {@link SlotCalculator#MAX_SLOT_MINUTES} e aplicado pelo
- * {@link SlotCalculator}, nunca aqui — guardar o valor bruto e o que permite
- * ao teste provar que o teto esta sendo aplicado na leitura.
- *
- * <p>A Fase 4 e responsavel por decidir <i>quais</i> agendamentos chegam aqui.
- * No Node, o repositorio filtra {@code status in (PENDING, CONFIRMED)}: um
- * agendamento cancelado, concluido ou no-show <b>nao</b> ocupa horario.
+ * Um intervalo ja ocupado na agenda de um dia.
  *
  * @param startsAt inicio, em hora local de Brasilia
- * @param durationMinutes soma bruta das duracoes dos servicos, em minutos
+ * @param durationMinutes duracao do bloco, em minutos
+ * @param duracaoMedida se a duracao e o tempo REAL do atendimento, e nao a
+ *     prevista. Muda o tratamento no {@link SlotCalculator}: a duracao
+ *     prevista e capada em {@code MAX_SLOT_MINUTES} na leitura — a regra que
+ *     impede o bug das 10:00 —, enquanto a medida entra como esta. Capar a
+ *     medida apagaria justamente o que ela serve para registrar: um
+ *     atendimento que levou 65 minutos ocupou 65, e o vao seguinte comeca
+ *     depois disso.
  */
-public record BookedSlot(LocalTime startsAt, int durationMinutes) {
+public record BookedSlot(LocalTime startsAt, int durationMinutes, boolean duracaoMedida) {
+
+	/**
+	 * O bloco de um agendamento cuja duracao e a <b>prevista</b>.
+	 *
+	 * <p>Duracao prevista e capada em {@link SlotCalculator#MAX_SLOT_MINUTES}
+	 * na leitura; ver {@code duracaoMedida}.
+	 */
+	public BookedSlot(LocalTime startsAt, int durationMinutes) {
+		this(startsAt, durationMinutes, false);
+	}
 
 	public BookedSlot {
 		Objects.requireNonNull(startsAt, "startsAt nao pode ser nulo");

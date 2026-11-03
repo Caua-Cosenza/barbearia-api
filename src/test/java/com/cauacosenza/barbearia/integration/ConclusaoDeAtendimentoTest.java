@@ -299,67 +299,113 @@ class ConclusaoDeAtendimentoTest extends AbstractPostgresIntegrationTest {
 	// =======================================================================
 
 	@Nested
-	@DisplayName("termino antecipado NAO devolve horario oferecivel")
+	@DisplayName("termino antecipado devolve o tempo real")
 	class TerminoAntecipado {
 
 		@Test
-		@DisplayName("corte 08:40-09:30 concluido as 09:10: a grade nao muda em nada")
-		void concluirCedoNaoAbreHorario() throws Exception {
+		@DisplayName("o caso do Jhonatan: 08:40-09:30 concluido as 09:10 -> primeiro horario 10:00")
+		void casoDoJhonatan() throws Exception {
 			String id = agendar("08:40");
 			relogioEm(AS_09_10);
 			renovarSessao();
 
-			List<String> comPendente = horarios();
-
-			assertThat(codigo(mudarStatus(id, "COMPLETED"))).isEqualTo(200);
-
-			List<String> comConcluido = horarios();
-
-			// Identicas. O intervalo 09:10-09:30 deixou de bloquear, mas
-			// nenhum ponto da grade cai dentro dele: os pontos sao 08:40 +
-			// 50k, e entre 09:10 e 09:30 nao ha nenhum.
-			assertThat(comConcluido).isEqualTo(comPendente);
-			assertThat(comConcluido).containsExactly(
-					"09:30", "10:20", "11:10", "12:00", "12:50", "13:40",
-					"14:30", "15:20", "16:10", "17:00", "17:50", "18:40");
-
-			// O primeiro horario oferecido e 09:30 nos dois casos -- o fim
-			// ORIGINAL do atendimento, nao o fim real.
-			assertThat(comConcluido).startsWith("09:30");
-		}
-
-		@Test
-		@DisplayName("nem terminando muito cedo: concluido as 08:45, o primeiro segue 09:30")
-		void nemTerminandoMuitoCedo() throws Exception {
-			// 08:45 libera 45 dos 50 minutos. Com a antecedencia minima de 15
-			// minutos o corte fica em 09:00, e o primeiro ponto da grade em
-			// 09:00 ou depois continua sendo 09:30.
-			String id = agendar("08:40");
-			relogioEm(Instant.parse("2026-12-15T11:45:00Z"));
-			renovarSessao(); // 08:45 BRT
-
-			assertThat(codigo(mudarStatus(id, "COMPLETED"))).isEqualTo(200);
-
+			// Antes da V3 o vao comecava no fim PREVISTO (09:30) e a grade era
+			// 09:30, 10:20, 11:10...
 			assertThat(horarios()).startsWith("09:30");
-			assertThat(horarios()).hasSize(12);
+
+			assertThat(codigo(mudarStatus(id, "COMPLETED"))).isEqualTo(200);
+
+			// Agora o vao comeca no fim REAL (09:10) e a grade inteira anda
+			// vinte minutos para tras.
+			assertThat(horarios()).containsExactly(
+					"10:00", "10:50", "11:40", "12:30", "13:20", "14:10",
+					"15:00", "15:50", "16:40", "17:30", "18:20");
+
+			// O 09:10 EXISTE na grade crua, mas cai na antecedencia minima de
+			// 15 minutos a partir das 09:10 -- por isso o primeiro oferecido e
+			// 10:00, e nao 09:10 nem 09:25.
+			assertThat(horarios()).doesNotContain("09:10", "09:25");
+
+			// O carimbo ficou no banco.
+			assertThat(appointments.findById(id).orElseThrow().getCompletedAt())
+					.isEqualTo(AS_09_10);
 		}
 
 		@Test
-		@DisplayName("o horario concluido volta a ser oferecido em dia futuro, e isso e esperado")
-		void concluidoNaoOcupaMesmo() throws Exception {
-			// Prova que COMPLETED realmente nao ocupa -- o mecanismo existe, o
-			// que falta e um ponto de grade dentro do tempo liberado. Aqui o
-			// atendimento inteiro e liberado, e o 08:40 reaparece.
+		@DisplayName("borda inversa: concluido as 09:45, o vao comeca 09:45 e nao 09:30")
+		void concluidoDepoisDoFimPrevisto() throws Exception {
+			String id = agendar("08:40");
+
+			relogioEm(Instant.parse("2026-12-15T12:45:00Z")); // 09:45 BRT
+			renovarSessao();
+			assertThat(codigo(mudarStatus(id, "COMPLETED"))).isEqualTo(200);
+
+			// 65 minutos reais, acima do teto de 50. O teto NAO se aplica a
+			// duracao medida: capar devolveria a agenda aos 50 e ofereceria
+			// horario em cima de um atendimento que ainda estava acontecendo.
+			assertThat(horarios()).containsExactly(
+					"10:35", "11:25", "12:15", "13:05", "13:55",
+					"14:45", "15:35", "16:25", "17:15", "18:05");
+
+			// A prova de que a ancora e 09:45: os pontos da grade ancorada em
+			// 09:30 nao existem.
+			assertThat(horarios()).doesNotContain("10:20", "11:10", "12:00");
+		}
+
+		@Test
+		@DisplayName("concluir muito cedo: 08:55 -> a grade comeca 09:45")
+		void concluidoMuitoCedo() throws Exception {
+			String id = agendar("08:40");
+
+			relogioEm(Instant.parse("2026-12-15T11:55:00Z")); // 08:55 BRT
+			renovarSessao();
+			assertThat(codigo(mudarStatus(id, "COMPLETED"))).isEqualTo(200);
+
+			// Quinze minutos reais. O ganho e visivel: antes da V3 o primeiro
+			// oferecido era 09:30, agora e 09:45 na grade ancorada em 08:55 --
+			// e o segundo e 10:35 em vez de 10:20.
+			assertThat(horarios()).startsWith("09:45", "10:35", "11:25");
+			assertThat(horarios()).hasSize(11);
+		}
+
+		@Test
+		@DisplayName("COMPLETED sem completed_at nao ocupa: o comportamento de antes da V3")
+		void concluidoSemCarimboNaoOcupa() throws Exception {
+			// E o caso de toda linha que ja existia quando a V3 subiu. Sem
+			// esta regra, um backfill implicito faria agendamentos antigos
+			// passarem a bloquear agenda de dias passados.
+			String id = agendar("08:40");
+			appointments.findById(id).ifPresent(a -> {
+				a.setStatus(AppointmentStatus.COMPLETED);
+				a.setCompletedAt(null);
+				appointments.saveAndFlush(a);
+			});
+
+			relogioEm(ANTES_DA_ABERTURA);
+			renovarSessao();
+
+			// Dia inteiro livre: os 13 pontos canonicos, nenhum bloco.
+			assertThat(horarios()).hasSize(13);
+			assertThat(horarios()).startsWith("08:40", "09:30");
+		}
+
+		@Test
+		@DisplayName("sair de COMPLETED limpa o carimbo")
+		void sairDeCompletedLimpaOCarimbo() throws Exception {
+			// Um completed_at remanescente continuaria ancorando o vao num
+			// atendimento que deixou de estar concluido.
 			String id = agendar("08:40");
 			relogioEm(AS_09_10);
 			renovarSessao();
-			assertThat(horarios()).doesNotContain("08:40");
-
 			mudarStatus(id, "COMPLETED");
+			assertThat(appointments.findById(id).orElseThrow().getCompletedAt()).isNotNull();
 
-			// Num dia sem o filtro de antecedencia (quarta, 16/12), o 08:40
-			// liberado aparece.
-			assertThat(horariosDe(LocalDate.of(2026, 12, 16))).contains("08:40");
+			assertThat(codigo(mudarStatus(id, "CANCELLED"))).isEqualTo(200);
+
+			assertThat(appointments.findById(id).orElseThrow().getCompletedAt()).isNull();
+			// E o dia volta inteiro: cancelado nao ocupa nada.
+			assertThat(horarios()).hasSize(12);
+			assertThat(horarios()).startsWith("09:30");
 		}
 
 	}

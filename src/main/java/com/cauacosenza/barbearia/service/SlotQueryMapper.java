@@ -1,6 +1,7 @@
 package com.cauacosenza.barbearia.service;
 
 import java.time.DateTimeException;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -16,6 +17,7 @@ import com.cauacosenza.barbearia.domain.entity.Appointment;
 import com.cauacosenza.barbearia.domain.entity.BarberSchedule;
 import com.cauacosenza.barbearia.domain.entity.BookedService;
 import com.cauacosenza.barbearia.domain.entity.ScheduleBlock;
+import com.cauacosenza.barbearia.domain.enums.AppointmentStatus;
 import com.cauacosenza.barbearia.domain.rules.BookedSlot;
 import com.cauacosenza.barbearia.domain.rules.SlotCalculator;
 import com.cauacosenza.barbearia.domain.rules.TimeBlock;
@@ -129,18 +131,79 @@ public class SlotQueryMapper {
 	 */
 	public BookedSlot toBookedSlot(Appointment agendamento) {
 		Objects.requireNonNull(agendamento, "agendamento nao pode ser nulo");
+
+		// Atendimento concluido COM carimbo de fim ocupa o tempo real:
+		// scheduled_at -> completed_at. E o que faz terminar um corte de 50
+		// minutos em 30 devolver os outros 20 para a grade, em vez de o vao
+		// seguinte continuar comecando no fim previsto.
+		Integer medida = duracaoMedida(agendamento);
+		if (medida != null) {
+			return new BookedSlot(toHoraDeBrasilia(agendamento.getScheduledAt()), medida, true);
+		}
+
 		return new BookedSlot(
 				toHoraDeBrasilia(agendamento.getScheduledAt()),
 				slotDurationMinutes(agendamento));
+	}
+
+	/**
+	 * A duracao real de um atendimento concluido, ou {@code null} quando ela
+	 * nao se aplica.
+	 *
+	 * <p>Nao se aplica em tres casos, e os tres importam:
+	 *
+	 * <ul>
+	 *   <li><b>status diferente de COMPLETED</b> — pendente e confirmado
+	 *       ocupam a duracao prevista, que e o que foi vendido;
+	 *   <li><b>{@code completedAt} nulo</b> — toda linha anterior a V3. Tratar
+	 *       nulo como zero reancoraria o vao no inicio do atendimento e faria
+	 *       agendamentos antigos liberarem horario que ninguem ofereceu;
+	 *   <li><b>{@code completedAt} antes de {@code scheduledAt}</b> — dado
+	 *       impossivel, que viraria bloco de largura negativa. O
+	 *       {@code BookedSlot} recusaria com excecao e derrubaria a consulta de
+	 *       horarios inteira por causa de uma linha torta, entao aqui ele volta
+	 *       a ocupar a duracao prevista.
+	 * </ul>
+	 */
+	private Integer duracaoMedida(Appointment agendamento) {
+		if (agendamento.getStatus() != AppointmentStatus.COMPLETED) {
+			return null;
+		}
+		Instant fim = agendamento.getCompletedAt();
+		if (fim == null || fim.isBefore(agendamento.getScheduledAt())) {
+			return null;
+		}
+		return (int) Duration.between(agendamento.getScheduledAt(), fim).toMinutes();
 	}
 
 	public List<BookedSlot> toBookedSlots(List<Appointment> agendamentos) {
 		Objects.requireNonNull(agendamentos, "agendamentos nao pode ser nulo");
 		List<BookedSlot> convertidos = new ArrayList<>(agendamentos.size());
 		for (Appointment agendamento : agendamentos) {
-			convertidos.add(toBookedSlot(agendamento));
+			if (formaBloco(agendamento)) {
+				convertidos.add(toBookedSlot(agendamento));
+			}
 		}
 		return List.copyOf(convertidos);
+	}
+
+	/**
+	 * O agendamento entra na formacao dos vaos?
+	 *
+	 * <p>Nao entra um unico caso: {@code COMPLETED} <b>sem</b>
+	 * {@code completed_at} — toda linha que existia antes da V3. Ela vem na
+	 * consulta porque {@code COMPLETED} esta em {@code OCUPAM_A_GRADE}, e aqui
+	 * e descartada, o que reproduz exatamente o comportamento anterior: antes
+	 * da V3 nenhum concluido entrava na consulta.
+	 *
+	 * <p>Sem este filtro a linha antiga ocuparia a duracao PREVISTA — pior do
+	 * que antes, nao melhor: agendamentos concluidos meses atras passariam a
+	 * bloquear a agenda de dias passados, e os numeros que o dono ja viu
+	 * mudariam retroativamente.
+	 */
+	private boolean formaBloco(Appointment agendamento) {
+		return agendamento.getStatus() != AppointmentStatus.COMPLETED
+				|| duracaoMedida(agendamento) != null;
 	}
 
 	/**

@@ -169,7 +169,14 @@ public final class SlotCalculator {
 		List<int[]> blocos = new ArrayList<>(agendados.size());
 		for (BookedSlot agendado : agendados) {
 			int inicio = minutos(agendado.startsAt());
-			int duracao = Math.min(agendado.durationMinutes(), MAX_SLOT_MINUTES);
+			// O teto vale para duracao PREVISTA. Duracao medida -- o
+			// scheduled_at -> completed_at de um atendimento concluido -- entra
+			// como esta: capa-la apagaria o que ela serve para registrar, e um
+			// atendimento que levou 65 minutos voltaria a liberar a agenda aos
+			// 50, oferecendo horario em cima de um corte em andamento.
+			int duracao = agendado.duracaoMedida()
+					? agendado.durationMinutes()
+					: Math.min(agendado.durationMinutes(), MAX_SLOT_MINUTES);
 			blocos.add(new int[] { inicio, inicio + duracao });
 		}
 		blocos.sort(Comparator.comparingInt(bloco -> bloco[0]));

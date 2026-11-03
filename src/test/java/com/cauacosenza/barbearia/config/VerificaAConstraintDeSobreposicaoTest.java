@@ -3,7 +3,7 @@ package com.cauacosenza.barbearia.config;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
@@ -71,6 +71,53 @@ class VerificaAConstraintDeSobreposicaoTest {
 	}
 
 	@Nested
+	@DisplayName("com a coluna completed_at ausente")
+	class ColunaAusente {
+
+		@Test
+		@DisplayName("prod NAO sobe, mesmo com a constraint presente")
+		void prodNaoSobe() {
+			// As duas perdas vem do mesmo `db push`, mas podem aparecer
+			// separadas: alguem pode reaplicar a V2 na mao e esquecer a V3.
+			assertThatIllegalStateException()
+					.isThrownBy(() -> verificarCom("prod", COM_A_CONSTRAINT, false))
+					.withMessageContaining(VerificaAConstraintDeSobreposicao.COLUNA)
+					.withMessageContaining("fim REAL")
+					.withMessageContaining("prisma db push");
+		}
+
+		@Test
+		@DisplayName("a mensagem diz o que se perde, nao so que a coluna falta")
+		void mensagemDizOQueSePerde() {
+			assertThatIllegalStateException()
+					.isThrownBy(() -> verificarCom("prod", COM_A_CONSTRAINT, false))
+					.satisfies(erro -> assertThat(erro.getMessage())
+							.contains("50 minutos")
+							.contains("devolver"));
+		}
+
+		@Test
+		@DisplayName("dev sobe com WARN")
+		void devSobe() {
+			assertThatCode(() -> verificarCom("dev", COM_A_CONSTRAINT, false))
+					.doesNotThrowAnyException();
+		}
+
+		@Test
+		@DisplayName("faltando as DUAS, a mensagem fala das duas")
+		void faltandoAsDuas() {
+			assertThatIllegalStateException()
+					.isThrownBy(() -> verificarCom("prod", List.of(), false))
+					.satisfies(erro -> assertThat(erro.getMessage())
+							.contains(VerificaAConstraintDeSobreposicao.CONSTRAINT)
+							.contains(VerificaAConstraintDeSobreposicao.COLUNA)
+							// a causa aparece UMA vez, nao duas
+							.satisfies(m -> assertThat(m.split("CAUSA PROVAVEL")).hasSize(2)));
+		}
+
+	}
+
+	@Nested
 	@DisplayName("com a constraint ausente")
 	class Ausente {
 
@@ -118,9 +165,21 @@ class VerificaAConstraintDeSobreposicaoTest {
 	// =======================================================================
 
 	private static void verificarCom(String perfil, List<String> exclusoesNoBanco) {
+		verificarCom(perfil, exclusoesNoBanco, true);
+	}
+
+	/**
+	 * <p>As duas consultas sao distinguidas pelo SQL, e nao por ordem de
+	 * chamada: um mock que devolvesse a mesma lista para as duas faria a
+	 * presenca da coluna seguir a presenca da constraint, e nenhum dos casos de
+	 * ausencia isolada seria exercitado.
+	 */
+	private static void verificarCom(String perfil, List<String> exclusoesNoBanco, boolean temColuna) {
 		JdbcTemplate jdbc = mock(JdbcTemplate.class);
-		given(jdbc.queryForList(any(String.class), eq(String.class)))
+		given(jdbc.queryForList(contains("pg_constraint"), eq(String.class)))
 				.willReturn(exclusoesNoBanco);
+		given(jdbc.queryForList(contains("information_schema"), eq(String.class)))
+				.willReturn(temColuna ? List.of(VerificaAConstraintDeSobreposicao.COLUNA) : List.of());
 
 		MockEnvironment ambiente = new MockEnvironment();
 		ambiente.setActiveProfiles(perfil);
