@@ -24,8 +24,10 @@ import java.util.Objects;
  *   <li>Caminha pelos blocos ocupados, em ordem de inicio, e coleta os vaos
  *       livres — antes do primeiro, entre eles, e depois do ultimo ate o
  *       fechamento.
- *   <li>Dentro de cada vao, gera horarios avancando pela duracao do slot
- *       enquanto ela couber inteira no vao.
+ *   <li>Dentro de cada vao, gera horarios avancando de
+ *       {@link #MAX_SLOT_MINUTES} em {@code MAX_SLOT_MINUTES}, enquanto a
+ *       duracao pedida couber inteira no vao. O passo e <b>fixo</b>; a duracao
+ *       pedida decide se cabe, nao de quanto em quanto se anda.
  *   <li>Remove os que ficam a menos de {@link #CUTOFF_MINUTES} minutos de
  *       agora, se a data for hoje.
  *   <li>Remove os que colidem com bloqueio.
@@ -113,8 +115,9 @@ public final class SlotCalculator {
 					+ ", mas a data pedida cai em dayOfWeek=" + diaPedido);
 		}
 
-		// Invariante A: a duracao pedida tambem e capada, e e esse valor capado
-		// que serve de passo do avanco e de tamanho do slot na colisao.
+		// Invariante A: a duracao pedida e capada, e e esse valor capado que
+		// serve de tamanho do slot — na checagem de caber e na colisao com
+		// bloqueio. O PASSO do avanco nao e este valor; ver o laco abaixo.
 		int duracaoSlot = Math.min(solicitacao.requestedDurationMinutes(), MAX_SLOT_MINUTES);
 		int abertura = minutos(jornada.startsAt());
 		int fechamento = minutos(jornada.endsAt());
@@ -124,8 +127,21 @@ public final class SlotCalculator {
 
 		List<LocalTime> livres = new ArrayList<>();
 		for (int[] vao : vaos) {
-			// Invariante: o slot tem que caber inteiro no vao.
-			for (int inicio = vao[0]; inicio + duracaoSlot <= vao[1]; inicio += duracaoSlot) {
+			// O PASSO e fixo em MAX_SLOT_MINUTES, nao a duracao pedida. A
+			// ancora continua sendo a borda do vao, e a checagem de caber
+			// continua usando a duracao real do atendimento.
+			//
+			// Por que fixo: a agenda do Jhonatan e empacotada -- o proximo
+			// horario e logo depois de o anterior terminar, qualquer que seja o
+			// servico. Com o passo igual a duracao, uma Sobrancelha de 3
+			// minutos gerava 216 horarios no dia, de tres em tres, e oferecia
+			// 11:43 no meio de duas horas livres: o cliente escolhia um ponto
+			// arbitrario e o pedaco antes dele virava resto invendavel.
+			//
+			// Com o passo fixo, pedir um servico curto oferece os mesmos
+			// pontos de encaixe que pedir um longo; o que muda e quanto de
+			// cada encaixe e consumido.
+			for (int inicio = vao[0]; inicio + duracaoSlot <= vao[1]; inicio += MAX_SLOT_MINUTES) {
 				livres.add(deMinutos(inicio));
 			}
 		}
