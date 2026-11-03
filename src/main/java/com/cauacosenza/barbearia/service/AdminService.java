@@ -113,14 +113,22 @@ public class AdminService {
 		Appointment agendamento = this.appointments.findById(id)
 				.orElseThrow(RecursoNaoEncontradoException::agendamento);
 
-		// Concluir atendimento que ainda nao comecou NAO e so um registro
-		// errado: COMPLETED nao esta em OCUPAM_AGENDA, entao o horario volta
-		// para a grade e e vendido a um segundo cliente -- que aparece na porta
-		// no mesmo minuto que o primeiro. O erro de um clique no painel vira
-		// dois clientes no mesmo horario.
-		if (pedido.status() == AppointmentStatus.COMPLETED
-				&& agendamento.getScheduledAt().isAfter(Instant.now(this.clock))) {
-			throw TransicaoDeStatusInvalidaException.conclusaoAntesDoHorario();
+		// COMPLETED e NO_SHOW dizem, os dois, que o atendimento ja terminou --
+		// um porque aconteceu, outro porque o cliente nao veio. Nenhum dos
+		// dois esta em OCUPAM_AGENDA, entao aplicar qualquer um deles a um
+		// atendimento FUTURO devolve o horario para a grade e o vende a um
+		// segundo cliente. Os dois aparecem na porta no mesmo minuto, e o erro
+		// de um clique no painel vira overbooking silencioso.
+		//
+		// CANCELLED e a excecao proposital: cancelar antes da hora e a
+		// operacao legitima, e liberar o horario e justamente o ponto.
+		if (agendamento.getScheduledAt().isAfter(Instant.now(this.clock))) {
+			if (pedido.status() == AppointmentStatus.COMPLETED) {
+				throw TransicaoDeStatusInvalidaException.conclusaoAntesDoHorario();
+			}
+			if (pedido.status() == AppointmentStatus.NO_SHOW) {
+				throw TransicaoDeStatusInvalidaException.faltaAntesDoHorario();
+			}
 		}
 
 		agendamento.setStatus(pedido.status());

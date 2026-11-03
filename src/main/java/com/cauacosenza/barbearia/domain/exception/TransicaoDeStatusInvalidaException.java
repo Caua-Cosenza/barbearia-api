@@ -27,15 +27,34 @@ public class TransicaoDeStatusInvalidaException extends BusinessException {
 	/**
 	 * Concluir um atendimento que ainda nao aconteceu.
 	 *
-	 * <p>A mensagem oferece as duas saidas legitimas em vez de so recusar,
-	 * porque quem clicou em "Concluir" por engano quase sempre queria uma
-	 * delas: o cliente desmarcou ({@code CANCELLED}) ou nao apareceu
-	 * ({@code NO_SHOW}).
+	 * <p>A mensagem oferece a saida legitima em vez de so recusar, porque quem
+	 * clicou em "Concluir" por engano queria aquilo: o cliente desmarcou.
+	 *
+	 * <p><b>Ela sugeria tambem {@code NO_SHOW}, e isso estava errado.</b>
+	 * Falta antes da hora passou a ser recusada pelo mesmo motivo — ver
+	 * {@link #faltaAntesDoHorario()} —, entao a sugestao mandava o barbeiro
+	 * para uma segunda recusa. Para atendimento futuro sobra uma saida so, e e
+	 * {@code CANCELLED}.
 	 */
 	public static TransicaoDeStatusInvalidaException conclusaoAntesDoHorario() {
 		return new TransicaoDeStatusInvalidaException(
 				"Não é possível concluir um atendimento que ainda não começou. "
-						+ "Se o cliente desmarcou, use CANCELLED; se não apareceu, NO_SHOW.");
+						+ "Se o cliente desmarcou, use CANCELLED.");
+	}
+
+	/**
+	 * Registrar falta num atendimento que ainda nao aconteceu.
+	 *
+	 * <p>Mesmo buraco pela mesma porta: {@code NO_SHOW} tambem esta fora de
+	 * {@code OCUPAM_AGENDA}, entao marcar falta antes da hora liberava um
+	 * horario vendido. A diferenca e que aqui sobra uma saida so —
+	 * {@code CANCELLED} —, porque "nao apareceu" e exatamente o que nao se
+	 * pode afirmar de quem ainda nao tinha hora de aparecer.
+	 */
+	public static TransicaoDeStatusInvalidaException faltaAntesDoHorario() {
+		return new TransicaoDeStatusInvalidaException(
+				"Não é possível registrar falta em um atendimento que ainda não começou. "
+						+ "Se o cliente desmarcou, use CANCELLED.");
 	}
 
 }

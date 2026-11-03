@@ -136,7 +136,7 @@ class ConclusaoDeAtendimentoTest extends AbstractPostgresIntegrationTest {
 			assertThat(corpo.get("error").asString()).isEqualTo("Conflict");
 			assertThat(corpo.get("message").asString()).isEqualTo(
 					"Não é possível concluir um atendimento que ainda não começou. "
-							+ "Se o cliente desmarcou, use CANCELLED; se não apareceu, NO_SHOW.");
+							+ "Se o cliente desmarcou, use CANCELLED.");
 		}
 
 		@Test
@@ -164,13 +164,56 @@ class ConclusaoDeAtendimentoTest extends AbstractPostgresIntegrationTest {
 		}
 
 		@Test
-		@DisplayName("as duas saidas sugeridas pela mensagem funcionam")
-		void saidasSugeridasFuncionam() throws Exception {
-			String cancelado = agendar("13:00");
-			assertThat(codigo(mudarStatus(cancelado, "CANCELLED"))).isEqualTo(200);
+		@DisplayName("a saida sugerida pela mensagem funciona, e libera o horario")
+		void saidaSugeridaFunciona() throws Exception {
+			// CANCELLED e a unica saida para atendimento futuro, e liberar o
+			// horario e justamente o ponto dela -- ao contrario de COMPLETED e
+			// NO_SHOW, onde liberar era o estrago.
+			String id = agendar("13:00");
+			// Com o agendamento de pe o dia tem 11 pontos: ele ocupa
+			// 13:00-13:50 e parte a grade em dois vaos.
+			assertThat(horarios()).hasSize(11);
 
-			String faltou = agendar("14:30");
-			assertThat(codigo(mudarStatus(faltou, "NO_SHOW"))).isEqualTo(200);
+			assertThat(codigo(mudarStatus(id, "CANCELLED"))).isEqualTo(200);
+
+			// Liberado, o dia volta aos 13 pontos canonicos. O 13:00 em si nao
+			// reaparece porque nunca foi ponto de grade -- este agendamento
+			// foi criado direto no repositorio, fora da grade.
+			assertThat(horarios()).hasSize(13);
+			assertThat(horarios()).contains("12:50", "13:40");
+		}
+
+		@Test
+		@DisplayName("NO_SHOW futuro tambem responde 409, com a mesma estrutura")
+		void faltaFuturaRecusada() throws Exception {
+			// Mesmo buraco pela mesma porta: NO_SHOW tambem esta fora de
+			// OCUPAM_AGENDA.
+			String id = agendar("13:00");
+
+			ResultActions r = mudarStatus(id, "NO_SHOW");
+
+			assertThat(codigo(r)).isEqualTo(409);
+			JsonNode corpo = corpoDe(r);
+			assertThat(corpo.get("error").asString()).isEqualTo("Conflict");
+			assertThat(corpo.get("message").asString()).isEqualTo(
+					"Não é possível registrar falta em um atendimento que ainda não começou. "
+							+ "Se o cliente desmarcou, use CANCELLED.");
+			assertThat(appointments.findById(id).orElseThrow().getStatus())
+					.isEqualTo(AppointmentStatus.PENDING);
+			assertThat(horarios()).doesNotContain("13:00");
+		}
+
+		@Test
+		@DisplayName("NO_SHOW: um minuto antes recusa, no minuto exato aceita")
+		void bordasDoNoShow() throws Exception {
+			String antes = agendar("13:00");
+			relogioEm(Instant.parse("2026-12-15T15:59:00Z")); // 12:59 BRT
+			renovarSessao();
+			assertThat(codigo(mudarStatus(antes, "NO_SHOW"))).isEqualTo(409);
+
+			relogioEm(Instant.parse("2026-12-15T16:00:00Z")); // 13:00 BRT
+			renovarSessao();
+			assertThat(codigo(mudarStatus(antes, "NO_SHOW"))).isEqualTo(200);
 		}
 
 		@Test
