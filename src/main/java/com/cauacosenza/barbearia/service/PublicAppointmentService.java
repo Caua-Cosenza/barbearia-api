@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -204,10 +205,34 @@ public class PublicAppointmentService {
 	 * Devolver na ordem do banco mudaria qual servico fica nessa coluna e,
 	 * portanto, o que relatorios antigos mostram.
 	 *
-	 * <p>Um id repetido e aceito e conta duas vezes na duracao e no preco —
-	 * como no Node, onde {@code findManyByIds} deduplica mas a soma e feita
-	 * sobre o resultado. Aqui a soma e feita sobre a lista pedida, entao
-	 * repetir cobra duas vezes. Ver README.
+	 * <h2>Id repetido conta uma vez</h2>
+	 *
+	 * <p>A repeticao e <b>deduplicada em silencio</b>, preservando a ordem do
+	 * primeiro aparecimento. Nao e recusada com 400, e a escolha tem tres
+	 * motivos.
+	 *
+	 * <p><b>Paridade com o Node.</b> O {@code findManyByIds} dele e um
+	 * {@code findMany({ id: { in: ids } })}, que devolve cada servico uma vez,
+	 * e as somas sao feitas sobre esse resultado. Cinco vezes o mesmo corte
+	 * custam R$ 45,00 no Node. A versao anterior deste metodo somava sobre a
+	 * lista <i>pedida</i> e cobrava R$ 225,00 — divergencia, nao decisao. Um
+	 * 400 aqui seria uma segunda divergencia, no sentido oposto.
+	 *
+	 * <p><b>A resposta nao esconde o que aconteceu.</b> O corpo devolve
+	 * {@code services}, {@code totalAmountCents} e
+	 * {@code totalDurationMinutes} do que foi efetivamente reservado, entao
+	 * quem mandou repetido ve exatamente o que comprou. Deduplicar nao e
+	 * alterar o pedido as escondidas; e interpretar sem ambiguidade e dizer o
+	 * resultado.
+	 *
+	 * <p><b>O erro atingiria so quem nao errou de proposito.</b> O frontend
+	 * nunca manda repetido, entao um 400 jamais seria exercitado em producao —
+	 * ele existiria para o dia em que um clique duplo, ou uma tela nova, enviar
+	 * o mesmo id duas vezes. Nesse dia, deduplicar reserva o horario e 400
+	 * perde o cliente, pelo que para ele e um detalhe invisivel.
+	 *
+	 * <p>O que <b>continua</b> recusado com 404 e id inexistente ou de servico
+	 * desativado — ali falta informacao, e adivinhar seria errado.
 	 */
 	private List<com.cauacosenza.barbearia.domain.entity.Service> buscarServicosNaOrdemPedida(
 			List<String> ids) {
@@ -218,8 +243,19 @@ public class PublicAppointmentService {
 								com.cauacosenza.barbearia.domain.entity.Service::getId,
 								Function.identity()));
 
+		// Id repetido conta UMA vez. O LinkedHashSet preserva a ordem do
+		// primeiro aparecimento, que e a ordem em que o cliente escolheu na
+		// tela e a que aparece no "Servicos:" da mensagem de WhatsApp.
+		//
+		// Sem isto, a lista pedida era percorrida como veio e a repeticao
+		// multiplicava preco e duracao: cinco vezes o mesmo corte davam
+		// R$ 225,00 no `amountCents` -- o numero que o cliente le na
+		// confirmacao -- e cinco linhas em `appointment_services` para um
+		// atendimento so.
+		Iterable<String> unicos = new LinkedHashSet<>(ids);
+
 		List<com.cauacosenza.barbearia.domain.entity.Service> naOrdem = new ArrayList<>(ids.size());
-		for (String id : ids) {
+		for (String id : unicos) {
 			com.cauacosenza.barbearia.domain.entity.Service servico = encontrados.get(id);
 			if (servico == null) {
 				// Id inventado e servico desativado dao a mesma resposta: a API
