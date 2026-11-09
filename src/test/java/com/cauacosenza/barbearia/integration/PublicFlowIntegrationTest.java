@@ -500,9 +500,13 @@ class PublicFlowIntegrationTest extends AbstractPostgresIntegrationTest {
 
 			mvc.perform(postJson("/api/v1/cancel/" + token, "{}")).andExpect(status(200));
 
-			Appointment cancelado = appointments.findByCancelToken(token).orElseThrow();
+			// Pelo ID, e nao pelo token: o cancelamento APAGA o cancel_token,
+			// para que o link morra junto. Ver TokenDeCancelamentoTest.
+			Appointment cancelado = appointments
+					.findById(tela.get("data").get("id").asString()).orElseThrow();
 			assertThat(cancelado.getStatus()).isEqualTo(AppointmentStatus.CANCELLED);
 			assertThat(cancelado.getCancelledAt()).isNotNull();
+			assertThat(cancelado.getCancelToken()).isNull();
 		}
 
 		@Test
@@ -569,24 +573,29 @@ class PublicFlowIntegrationTest extends AbstractPostgresIntegrationTest {
 		}
 
 		@Test
-		@DisplayName("cancelar duas vezes: a segunda e 400 de negocio e preserva o cancelled_at")
+		@DisplayName("cancelar duas vezes: a segunda e 404 e preserva o cancelled_at")
 		void segundoCancelamentoEhIdempotente() throws Exception {
-			String token = corpoDe(agendar(TERCA, "14:00", List.of(corteId)))
-					.get("data").get("cancelToken").asString();
+			JsonNode criado = corpoDe(agendar(TERCA, "14:00", List.of(corteId)));
+			String token = criado.get("data").get("cancelToken").asString();
+			String id = criado.get("data").get("id").asString();
 
 			mvc.perform(postJson("/api/v1/cancel/" + token, "{}")).andExpect(status(200));
 			Instant primeiroCancelamento =
-					appointments.findByCancelToken(token).orElseThrow().getCancelledAt();
+					appointments.findById(id).orElseThrow().getCancelledAt();
 
 			// O relogio anda entre os dois cliques.
 			org.mockito.BDDMockito.given(clock.instant())
 					.willReturn(Instant.parse("2026-12-15T12:00:00Z"));
 
+			// 404, e nao mais 400: o primeiro clique apagou o token, entao a
+			// busca falha antes de qualquer regra de negocio. E deliberado --
+			// token morto responde igual a token inexistente, para nao haver
+			// canal de distincao.
 			mvc.perform(postJson("/api/v1/cancel/" + token, "{}"))
-					.andExpect(status(400))
-					.andExpect(mensagem("Agendamento não pode ser cancelado"));
+					.andExpect(status(404))
+					.andExpect(mensagem("Agendamento não encontrado"));
 
-			Appointment depois = appointments.findByCancelToken(token).orElseThrow();
+			Appointment depois = appointments.findById(id).orElseThrow();
 			assertThat(depois.getStatus()).isEqualTo(AppointmentStatus.CANCELLED);
 			// A hora real do cancelamento nao foi sobrescrita pela hora de
 			// alguem conferindo o link.

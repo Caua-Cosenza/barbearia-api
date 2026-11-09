@@ -110,8 +110,10 @@ class NotificacaoSemBarberPhoneTest extends AbstractPostgresIntegrationTest {
 	@Test
 	@DisplayName("cancelar não tenta avisar ninguém, e o cancelamento funciona")
 	void cancelamentoSemAviso() throws Exception {
-		String token = this.json.readTree(agendar(LocalTime.of(14, 30)))
-				.get("data").get("cancelToken").asString();
+		tools.jackson.databind.JsonNode criado =
+				this.json.readTree(agendar(LocalTime.of(14, 30)));
+		String token = criado.get("data").get("cancelToken").asString();
+		String idDoAgendamento = criado.get("data").get("id").asString();
 		org.mockito.Mockito.reset(this.whatsapp);
 		given(this.whatsapp.enviar(any())).willReturn(true);
 
@@ -121,7 +123,9 @@ class NotificacaoSemBarberPhoneTest extends AbstractPostgresIntegrationTest {
 
 		// O unico destinatario seria o barbeiro, e nao ha telefone.
 		org.mockito.Mockito.verifyNoInteractions(this.whatsapp);
-		assertThat(appointments.findByCancelToken(token).orElseThrow().getCancelledAt()).isNotNull();
+		// Pelo ID: cancelar apaga o cancel_token.
+		assertThat(appointments.findById(idDoAgendamento).orElseThrow().getCancelledAt())
+				.isNotNull();
 	}
 
 	private String agendar(LocalTime hora) throws Exception {

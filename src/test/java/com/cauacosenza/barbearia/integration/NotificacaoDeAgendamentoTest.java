@@ -338,8 +338,9 @@ class NotificacaoDeAgendamentoTest extends AbstractPostgresIntegrationTest {
 
 			mvc.perform(postJson("/api/v1/cancel/" + token, "{}")).andExpect(status(200));
 
-			assertThat(appointments.findByCancelToken(token).orElseThrow().getStatus())
-					.isEqualTo(AppointmentStatus.CANCELLED);
+			// Pelo ID: cancelar apaga o cancel_token.
+			assertThat(appointments.findById(criado.get("data").get("id").asString())
+					.orElseThrow().getStatus()).isEqualTo(AppointmentStatus.CANCELLED);
 			// E o horario voltou a ser vendavel.
 			assertThat(horariosLivres()).contains("14:30");
 		}
