@@ -107,6 +107,30 @@ public class AdminService {
 	 * <p>{@code cancelled_at} nao e preenchido aqui, e isso acompanha o Node —
 	 * o {@code adminService.updateAppointmentStatus} grava so o status. A
 	 * coluna fica reservada ao cancelamento pelo link do cliente.
+	 *
+	 * <h2>Cancelar aqui NAO avisa o cliente — decisao, nao esquecimento</h2>
+	 *
+	 * <p>Nao ha evento publicado neste metodo, de proposito. As tres mensagens
+	 * de WhatsApp existentes avisam o cliente na criacao e o barbeiro na criacao
+	 * e no cancelamento pelo link; uma quarta, avisando o cliente quando o
+	 * Jhonatan cancela pelo painel, foi desenhada, revisada e <b>descartada</b>:
+	 * ele prefere avisar pessoalmente. Cancelar um horario ja marcado e
+	 * justamente a situacao em que ele quer explicar o motivo, oferecer outro
+	 * dia e ouvir a resposta — um aviso automatico chegaria antes dele e
+	 * tiraria essa conversa.
+	 *
+	 * <p>Nao e regressao da migracao: o {@code adminService.ts} do Node tambem
+	 * nao avisa ninguem neste caminho.
+	 *
+	 * <p>Daqui sai uma consequencia que parece bug e nao e: este metodo
+	 * <b>nao</b> apaga o {@code cancel_token}, ao contrario do
+	 * {@link CancelService#cancelar(String)}. Sem a mensagem, o link que o
+	 * cliente ja tem e a unica forma de ele descobrir que o horario caiu; fechar
+	 * o token aqui o deixaria sem nenhum caminho. A expiracao de leitura de sete
+	 * dias ja limita a janela. As duas coisas dependem uma da outra: quem
+	 * implementar a mensagem pode fechar o token; quem fechar o token sem a
+	 * mensagem piora a situacao. Ver README, "Cancelamento pelo painel NAO avisa
+	 * o cliente".
 	 */
 	@Transactional
 	public UpdateAppointmentStatusResponse mudarStatus(String id, UpdateAppointmentStatusRequest pedido) {

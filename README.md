@@ -843,6 +843,43 @@ produção por decisão do cliente, e está comentado no `index.ts` do Node. As
 colunas continuam no banco, com o novo uso acima. **O job não existe mais e
 não foi recriado.**
 
+### Cancelamento pelo painel NÃO avisa o cliente — decisão, não esquecimento
+
+São três mensagens de WhatsApp, e só três: confirmação ao cliente, novo
+agendamento ao barbeiro, e cancelamento ao barbeiro quando **o cliente**
+cancela pelo link. Quando o **Jhonatan** cancela pelo painel, nenhuma mensagem
+é enviada.
+
+Isso parece buraco e não é. O desenho da quarta mensagem foi feito, revisado e
+**descartado**: o Jhonatan prefere avisar o cliente pessoalmente nesse caso.
+Cancelar um horário já marcado é a situação em que ele quer explicar o motivo,
+oferecer outro dia e ouvir a resposta — coisas que uma mensagem automática não
+faz, e que ela atrapalharia por chegar primeiro.
+
+O que foi considerado e não implementado: um evento novo no `AdminService`, um
+quarto construtor em `MensagensDeWhatsApp`, o disparo no
+`NotificacaoDeAgendamentoListener`, e teste comparando o texto no WireMock.
+Nada disso existe no código. Se um dia a decisão mudar, o caminho é esse.
+
+**O Node se comporta igual, e isto não é regressão da migração.** O
+`adminService.ts` dele importa só `prisma` e `decrypt`; as quatro chamadas de
+WhatsApp do Node estão em `appointmentService.ts` (duas), `routes/cancel.ts` e
+no `reminderJob` desligado — nenhuma no caminho do painel.
+
+**Consequência que a decisão aceita, e o que a limita.** Quem não for avisado
+pessoalmente descobre abrindo o link de cancelamento, que mostra
+`status: CANCELLED` e `canCancel: false`. É por isso que o
+`AdminService` **não** apaga o `cancel_token`, ao contrário do
+`CancelService`: sem a mensagem, o link é a única via de descoberta, e fechá-la
+pioraria a situação em vez de melhorar. A janela não é infinita — a leitura
+expira sete dias depois do horário marcado, como qualquer outro link
+(`CancelService.VALIDADE_DA_LEITURA`).
+
+Em resumo, para quem chegar aqui em seis meses: **a ausência da mensagem é
+intencional, a sobrevivência do token nesse caminho é intencional, e as duas
+dependem uma da outra.** Fechar uma sem a outra deixa o cliente sem nenhuma
+forma de saber que o horário dele caiu.
+
 ### Segurança nos logs
 
 Este projeto já teve um incidente de log vazando conteúdo de conversa de
