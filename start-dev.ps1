@@ -137,6 +137,26 @@ function Wait-Condicao([scriptblock]$Condicao, [int]$Segundos, [string]$Oque) {
     return $false
 }
 
+<#
+    Roda um comando `docker` descartando o stderr, e devolve o stdout.
+
+    <b>Por que via `cmd /c` e nao com `2>$null`.</b> No PowerShell 5.1, o
+    stderr de um executavel nativo redirecionado dentro do PowerShell vira um
+    ErrorRecord de NativeCommandError -- e com `$ErrorActionPreference =
+    'Stop'` isso ABORTA o script. Ou seja, `2>$null` fazia este script morrer
+    exatamente quando o engine do Docker estava fora, que e o caso que ele
+    existe para tratar. O `cmd /c` descarta a saida de erro antes de ela
+    chegar ao PowerShell, e o `$LASTEXITCODE` continua sendo o do docker.
+#>
+function Invoke-Docker([string]$Argumentos) {
+    return (cmd /c "docker $Argumentos 2>nul")
+}
+
+function Test-DockerNoAr() {
+    Invoke-Docker 'info' | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Test-PortaEmUso([int]$Porta) {
     $c = Get-NetTCPConnection -LocalPort $Porta -State Listen -ErrorAction SilentlyContinue
     if ($c) { return $true }
@@ -249,15 +269,13 @@ Write-Passo '1/4  Postgres e Redis'
 # e o sintoma a jusante e ilegivel: o Testcontainers reclama de "valid Docker
 # environment", a aplicacao perde o pool, o navegador mostra erro de rede sem
 # explicacao. Melhor detectar aqui e nomear.
-docker info --format '{{.ServerVersion}}' 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) {
+if (-not (Test-DockerNoAr)) {
     Write-Nota 'o engine do Docker nao responde; tentando iniciar o Docker Desktop'
     $exeDocker = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
     if (Test-Path -LiteralPath $exeDocker) {
         Start-Process -FilePath $exeDocker | Out-Null
         $subiu = Wait-Condicao {
-            docker info --format '{{.ServerVersion}}' 2>$null | Out-Null
-            if ($LASTEXITCODE -eq 0) { return $true }
+            if (Test-DockerNoAr) { return $true }
             return 'engine ainda nao responde'
         } $TimeoutSeconds 'o engine do Docker'
         if (-not $subiu) {
@@ -276,7 +294,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Ok 'engine do Docker respondendo'
 
 # `docker compose` (plugin) ou `docker-compose` (binario antigo).
-docker compose version 2>$null | Out-Null
+Invoke-Docker 'compose version' | Out-Null
 if ($LASTEXITCODE -eq 0) {
     $Compose = 'docker'
     $ComposeArgs0 = @('compose')
@@ -299,10 +317,17 @@ else {
 $argsUp = $ComposeArgs0 + @('--env-file', $ArquivoEnv,
                             '-f', (Join-Path $Raiz 'docker-compose.yml'),
                             'up', '-d', 'postgres', 'redis')
+# O compose escreve o progresso no stderr. Com 'Stop', a primeira linha dele
+# abortaria o script antes de a verificacao de $LASTEXITCODE abaixo poder dar
+# uma mensagem util.
+$anterior = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 & $Compose @argsUp
-if ($LASTEXITCODE -ne 0) {
+$codigoDoCompose = $LASTEXITCODE
+$ErrorActionPreference = $anterior
+if ($codigoDoCompose -ne 0) {
     Stop-ComErro 'docker compose up falhou' `
-        "o comando saiu com codigo $LASTEXITCODE (a saida dele esta acima)" `
+        "o comando saiu com codigo $codigoDoCompose (a saida dele esta acima)" `
         @("Porta ocupada? Veja quem escuta em $PortaPg e $PortaRd",
           'Senha trocada? O volume barbearia-postgres-data foi criado com a senha',
           'original, e o Postgres recusa autenticacao se POSTGRES_PASSWORD mudar')
@@ -312,15 +337,18 @@ foreach ($nome in @('barbearia-postgres', 'barbearia-redis')) {
     if ($nome -eq 'barbearia-postgres') { $porta = $PortaPg } else { $porta = $PortaRd }
 
     $saudavel = Wait-Condicao {
-        $st = docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}sem-healthcheck{{end}}' $nome 2>$null
+        $bruto = Invoke-Docker "inspect $nome"
         if ($LASTEXITCODE -ne 0) { return 'container ainda nao existe' }
+        $estado = ($bruto | ConvertFrom-Json)[0].State
+        if ($estado.Health) { $st = $estado.Health.Status } else { $st = 'sem-healthcheck' }
         if ($st -eq 'healthy') { return $true }
         if ($st -eq 'sem-healthcheck') { return $true }
         return "healthcheck em '$st'"
     } $TimeoutSeconds "$nome ficar healthy"
 
     if (-not $saudavel) {
-        $saidaHc = docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' $nome
+        $saidaHc = (Invoke-Docker "inspect $nome" | ConvertFrom-Json)[0].State.Health.Log |
+                   Select-Object -Last 1 -ExpandProperty Output
         Stop-ComErro "$nome nao ficou healthy" `
             "o healthcheck do container nao passou em $TimeoutSeconds s" `
             @("Saida do healthcheck: $saidaHc",

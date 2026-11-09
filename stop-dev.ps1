@@ -105,12 +105,16 @@ else {
     Write-Host ''
     Write-Host '==> Containers' -ForegroundColor Cyan
 
-    docker info --format '{{.ServerVersion}}' 2>$null | Out-Null
+    # cmd /c, e nao 2>$null: no PowerShell 5.1 o stderr de executavel nativo
+    # redirecionado dentro do PowerShell vira NativeCommandError e, com
+    # ErrorActionPreference = 'Stop', aborta o script -- justamente quando o
+    # engine esta fora, que e o caso que este trecho trata.
+    cmd /c "docker info >nul 2>nul"
     if ($LASTEXITCODE -ne 0) {
         Write-Host '    o engine do Docker nao responde; nada a parar' -ForegroundColor DarkGray
     }
     else {
-        docker compose version 2>$null | Out-Null
+        cmd /c "docker compose version >nul 2>nul"
         if ($LASTEXITCODE -eq 0) {
             $Compose = 'docker'
             $ComposeArgs0 = @('compose')
