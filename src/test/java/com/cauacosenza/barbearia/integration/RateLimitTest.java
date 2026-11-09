@@ -21,7 +21,7 @@ import tools.jackson.databind.JsonNode;
  * resultado.
  *
  * <p>As requisicoes se apresentam como vindas da borda ({@code X-Edge-Token} +
- * {@code X-Edge-Client-IP}), que e o unico jeito de escolher o IP visto pelo
+ * {@code CF-Connecting-IP}), que e o unico jeito de escolher o IP visto pelo
  * {@code ClientIpResolver}. Qual cabecalho vira a chave em cada cenario e
  * assunto de {@link ResolucaoDeIpDoClienteTest}; aqui o que se mede sao os
  * limites.

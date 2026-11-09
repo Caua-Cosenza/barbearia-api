@@ -34,8 +34,8 @@ package com.cauacosenza.barbearia.config;
  * <p><b>O que isto NAO faz: normalizar.</b> {@code ::1} e
  * {@code 0:0:0:0:0:0:0:1} sao o mesmo endereco e continuariam sendo duas
  * chaves. Nao e problema na pratica porque, nos dois caminhos em que o valor e
- * aceito, quem escreve o texto e sempre o mesmo componente — a borda, via
- * {@code X-Edge-Client-IP}, ou o proxy do Railway, via a ultima entrada do
+ * aceito, quem escreve o texto e sempre o mesmo componente — a Cloudflare,
+ * via {@code CF-Connecting-IP}, ou o proxy do Railway, via a ultima entrada do
  * {@code X-Forwarded-For} — e cada um escreve de uma forma so. Normalizar
  * exigiria parsear para bytes e reimprimir, o que e bem mais codigo do que
  * reconhecer, para resolver uma duplicacao que ninguem consegue provocar.

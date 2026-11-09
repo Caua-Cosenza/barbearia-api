@@ -16,10 +16,10 @@ import com.cauacosenza.barbearia.config.ClientIpResolver;
  * os ultimos testes de cada classe recebem 429 por um motivo que nada tem a
  * ver com o que verificam. Quem testa o limite em si fixa o IP de proposito.
  *
- * <p><b>Por que passou a precisar do token.</b> Antes bastava mandar
- * {@code CF-Connecting-IP: teste-<uuid>}: o resolvedor aceitava qualquer
- * cabecalho e nao validava o formato. Agora ele so confia em
- * {@code X-Edge-Client-IP} quando o {@code X-Edge-Token} confere, e so aceita
+ * <p><b>Por que precisa do token.</b> Antes bastava mandar
+ * {@code CF-Connecting-IP: teste-<uuid>}: o resolvedor aceitava o cabecalho de
+ * qualquer um e nao validava o formato. O cabecalho continua sendo o mesmo,
+ * mas agora so e lido quando o {@code X-Edge-Token} confere, e so se for
  * literal de IP — as duas coisas que fecharam a brecha de rate limit.
  *
  * <p><b>Por que IPv6 de documentacao e um contador.</b> Os enderecos saem de
@@ -69,7 +69,7 @@ public final class RequisicaoDaBorda {
 				aleatorio & 0xffff);
 	}
 
-	/** Acrescenta o token da borda e um {@code X-Edge-Client-IP} inedito. */
+	/** Acrescenta o token da borda e um {@code CF-Connecting-IP} inedito. */
 	public static MockHttpServletRequestBuilder comIpProprio(MockHttpServletRequestBuilder pedido) {
 		return comIp(pedido, proximoIp());
 	}
@@ -80,7 +80,7 @@ public final class RequisicaoDaBorda {
 
 		return pedido
 				.header(ClientIpResolver.X_EDGE_TOKEN, SegredosDeTeste.TOKEN_DA_BORDA)
-				.header(ClientIpResolver.X_EDGE_CLIENT_IP, ip);
+				.header(ClientIpResolver.CF_CONNECTING_IP, ip);
 	}
 
 	/**

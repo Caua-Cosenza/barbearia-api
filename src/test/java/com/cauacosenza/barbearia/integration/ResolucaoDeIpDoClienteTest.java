@@ -18,10 +18,12 @@ import com.cauacosenza.barbearia.config.ClientIpResolver;
  * Qual valor vira a chave do balde de rate limit em cada ponto da cadeia.
  *
  * <p>A cadeia de producao e
- * {@code cliente -> Worker da Cloudflare -> proxy do Railway -> Spring Boot},
- * e o que o container enxerga dela sao quatro coisas: o {@code X-Edge-Token},
- * o {@code X-Edge-Client-IP}, o {@code X-Forwarded-For} e o
- * {@code getRemoteAddr()}. Cada teste aqui monta essas quatro coisas como elas
+ * {@code cliente -> Cloudflare -> proxy do Railway -> Spring Boot} — o
+ * frontend chama {@code api.barbeariajhonatan.com}, que esta <i>proxied</i>,
+ * e nao ha Worker no caminho. O que o container enxerga dela sao quatro
+ * coisas: o {@code X-Edge-Token} que a Transform Rule acrescenta, o
+ * {@code CF-Connecting-IP} que a Cloudflare escreve, o
+ * {@code X-Forwarded-For} e o {@code getRemoteAddr()}. Cada teste aqui monta essas quatro coisas como elas
  * chegam em um cenario real e afirma <b>a chave literal no Redis</b> — nao o
  * comportamento do limite, que e consequencia.
  *
@@ -57,7 +59,7 @@ class ResolucaoDeIpDoClienteTest extends AbstractPostgresIntegrationTest {
 	// =======================================================================
 
 	@Test
-	@DisplayName("1. token valido: a chave e o X-Edge-Client-IP")
+	@DisplayName("1. token valido: a chave e o CF-Connecting-IP")
 	void tokenValidoUsaOIpEscritoPelaBorda() throws Exception {
 		String visitante = RequisicaoDaBorda.proximoIp();
 
@@ -76,9 +78,9 @@ class ResolucaoDeIpDoClienteTest extends AbstractPostgresIntegrationTest {
 
 		this.mvc.perform(RequisicaoDaBorda.comIp(pedido(umIpQualquer()), visitante)
 				.header(X_FORWARDED_FOR, ruido)
-				// CF-Connecting-IP deixou de ser lido: e forjavel fora da
-				// Cloudflare e, com o contrato da borda, e redundante.
-				.header("CF-Connecting-IP", ruido));
+				// X-Real-IP nunca foi lido, e sem Worker nao ha nem a duvida
+				// sobre ele sobrescrever o CF-Connecting-IP em subrequest.
+				.header("X-Real-IP", ruido));
 
 		assertThat(baldeExiste(visitante)).isTrue();
 		assertThat(baldeExiste(ruido))
@@ -91,17 +93,20 @@ class ResolucaoDeIpDoClienteTest extends AbstractPostgresIntegrationTest {
 	// =======================================================================
 
 	@Test
-	@DisplayName("2. token ausente: X-Edge-Client-IP e ignorado e vale o fallback")
+	@DisplayName("2. token ausente: CF-Connecting-IP e ignorado e vale o fallback")
 	void semTokenOIpDaBordaEhIgnorado() throws Exception {
 		String atacante = RequisicaoDaBorda.proximoIp();
 		String forjado = RequisicaoDaBorda.proximoIp();
 
+		// O cenario "requisicao direta no up.railway.app": o CF-Connecting-IP
+		// e escrito pela Cloudflare, mas quem fala direto com o Railway
+		// escreve o que quiser com esse nome.
 		this.mvc.perform(pedido(umIpQualquer())
-				.header(ClientIpResolver.X_EDGE_CLIENT_IP, forjado)
+				.header(ClientIpResolver.CF_CONNECTING_IP, forjado)
 				.header(X_FORWARDED_FOR, atacante));
 
 		assertThat(baldeExiste(forjado))
-				.as("sem o segredo, o cabecalho da borda e so mais um cabecalho de cliente")
+				.as("sem o segredo, o cabecalho da Cloudflare e so mais um cabecalho de cliente")
 				.isFalse();
 		assertThat(baldeExiste(atacante))
 				.as("o pedido deveria ser atribuido a quem abriu a conexao")
@@ -117,30 +122,37 @@ class ResolucaoDeIpDoClienteTest extends AbstractPostgresIntegrationTest {
 		this.mvc.perform(pedido(umIpQualquer())
 				.header(ClientIpResolver.X_EDGE_TOKEN,
 						SegredosDeTeste.TOKEN_DA_BORDA + "-errado")
-				.header(ClientIpResolver.X_EDGE_CLIENT_IP, forjado)
+				.header(ClientIpResolver.CF_CONNECTING_IP, forjado)
 				.header(X_FORWARDED_FOR, atacante));
 
 		assertThat(baldeExiste(forjado)).isFalse();
 		assertThat(baldeExiste(atacante)).isTrue();
 	}
 
+	/**
+	 * O {@code X-Edge-Client-IP} nao e lido nem com o token conferindo.
+	 *
+	 * <p>Ele foi o cabecalho do contrato enquanto o desenho previa um Worker
+	 * da Cloudflare escrevendo o IP. Nao ha Worker, e o cabecalho saiu do
+	 * codigo — este teste existe para que ele nao volte por descuido,
+	 * carregando um valor que hoje ninguem escreve e que, se alguem escrever,
+	 * e o proprio cliente.
+	 */
 	@Test
-	@DisplayName("2c. CF-Connecting-IP forjado nao vira chave")
-	void cfConnectingIpForjadoNaoEhAceito() throws Exception {
-		String atacante = RequisicaoDaBorda.proximoIp();
-		String forjado = RequisicaoDaBorda.proximoIp();
+	@DisplayName("2c. X-Edge-Client-IP nao e lido, mesmo com token valido")
+	void oCabecalhoAntigoDaBordaNaoEhMaisLido() throws Exception {
+		String visitante = RequisicaoDaBorda.proximoIp();
+		String antigo = RequisicaoDaBorda.proximoIp();
 
-		this.mvc.perform(pedido(umIpQualquer())
-				.header("CF-Connecting-IP", forjado)
-				.header(X_FORWARDED_FOR, atacante));
+		this.mvc.perform(RequisicaoDaBorda.comIp(pedido(umIpQualquer()), visitante)
+				.header("X-Edge-Client-IP", antigo));
 
-		assertThat(baldeExiste(forjado))
-				.as("""
-						CF-Connecting-IP de um pedido que nao passou pela borda \
-						virou a chave do balde: o atacante escolhe o proprio \
-						balde""")
+		assertThat(baldeExiste(antigo))
+				.as("o cabecalho do desenho antigo voltou a ser lido")
 				.isFalse();
-		assertThat(baldeExiste(atacante)).isTrue();
+		assertThat(baldeExiste(visitante))
+				.as("a chave deveria ser o CF-Connecting-IP")
+				.isTrue();
 	}
 
 	// =======================================================================
@@ -188,7 +200,7 @@ class ResolucaoDeIpDoClienteTest extends AbstractPostgresIntegrationTest {
 	// =======================================================================
 
 	@Test
-	@DisplayName("4. X-Edge-Client-IP que nao e IP: cai no remoteAddr")
+	@DisplayName("4. CF-Connecting-IP que nao e IP: cai no remoteAddr")
 	void valorQueNaoEhIpCaiNoRemoteAddr() throws Exception {
 		String socket = RequisicaoDaBorda.proximoIp();
 		String naoEhIp = "balde-escolhido-a-dedo";
@@ -269,8 +281,8 @@ class ResolucaoDeIpDoClienteTest extends AbstractPostgresIntegrationTest {
 			// conexao e sempre a mesma.
 			String inventado = RequisicaoDaBorda.proximoIp();
 			ultimoStatus = this.mvc.perform(pedido(socket)
-					.header(ClientIpResolver.X_EDGE_CLIENT_IP, inventado)
-					.header("CF-Connecting-IP", inventado)
+					.header(ClientIpResolver.CF_CONNECTING_IP, inventado)
+					.header("X-Edge-Client-IP", inventado)
 					.header(X_FORWARDED_FOR, inventado + ", " + atacante))
 					.andReturn().getResponse().getStatus();
 		}

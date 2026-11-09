@@ -654,7 +654,7 @@ de verdade hoje é a regra do Cloudflare, que usa `ip.src` na borda.
 
 O `ClientIpResolver` usa, nesta ordem:
 
-1. **`X-Edge-Client-IP`, se o `X-Edge-Token` conferir** com o `EDGE_TOKEN`
+1. **`CF-Connecting-IP`, se o `X-Edge-Token` conferir** com o `EDGE_TOKEN`
    configurado. É a borda se identificando; nenhum outro cabeçalho é lido.
    Comparação em tempo constante (`MessageDigest.isEqual`).
 2. **A última entrada do `X-Forwarded-For`** — o par que de fato abriu a
@@ -674,15 +674,26 @@ requisição e tinha bucket novo a cada requisição: rate limit inexistente,
 inclusive o bucket de 5/min do `/auth`, que é a trava de força bruta de senha.
 A entrada mais à esquerda do `X-Forwarded-For` era o pior dos dois, porque num
 cabeçalho de *append* ela é exatamente a parte que o cliente escreveu.
-`CF-Connecting-IP` deixou de ser lido: com o contrato da borda ele é
-redundante, e a aplicação passou a não olhar nenhum cabeçalho que o cliente
-consiga escrever. Os cenários estão em `ResolucaoDeIpDoClienteTest`.
+O problema nunca foi o `CF-Connecting-IP` em si — vindo da Cloudflare ele é
+confiável, porque ela **sobrescreve** o que o visitante tenha mandado com esse
+nome. O problema era lê-lo sem saber se a requisição veio de lá. Ele voltou a
+ser lido, mas só atrás do token: o que mudou não foi a confiança no cabeçalho,
+foi passar a exigir prova de procedência antes de olhar para ele. Os cenários
+estão em `ResolucaoDeIpDoClienteTest`.
+
+Um desenho intermediário previa um cabeçalho próprio, `X-Edge-Client-IP`,
+escrito por um Worker da Cloudflare. **Não há Worker**: o frontend chama
+`api.barbeariajhonatan.com` direto, cross-origin, e esse domínio está
+*proxied* — o `Cf-Ray` na resposta confirma. Então o `CF-Connecting-IP` já
+chega escrito, e o que falta provar é só a procedência. A borda precisa
+acrescentar **um** cabeçalho, não dois, por uma Transform Rule de valor
+estático. Ver `docs/borda-no-corte.md`.
 
 > **O passo 2 é seguro, não é regime permanente.** Sem `EDGE_TOKEN` — ou
-> enquanto a borda não enviar os dois cabeçalhos — a última entrada do
+> enquanto a Transform Rule não acrescentar o token — a última entrada do
 > `X-Forwarded-For` de uma requisição vinda da Cloudflare é um IP de saída
 > **da Cloudflare**, igual para muita gente, e os visitantes voltam a dividir
-> poucos buckets. A mudança do Worker tem que entrar junto com o corte, não
+> poucos buckets. A Transform Rule tem que entrar junto com o corte, não
 > depois.
 
 ### Jackson 3, não Jackson 2

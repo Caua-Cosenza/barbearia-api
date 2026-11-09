@@ -39,7 +39,7 @@ public final class SegredosDeTeste {
 	 *
 	 * <p>Esta no contexto de <b>todo</b> teste, e nao so no que verifica a
 	 * resolucao de IP, porque e assim que as classes base conseguem dar um IP
-	 * proprio a cada requisicao: sem o token, o {@code X-Edge-Client-IP} e
+	 * proprio a cada requisicao: sem o token, o {@code CF-Connecting-IP} e
 	 * ignorado e todas as requisicoes da suite caem no mesmo balde.
 	 */
 	public static final String TOKEN_DA_BORDA =
