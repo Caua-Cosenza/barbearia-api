@@ -77,7 +77,76 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
-    baseline-on-migrate: false
+
+    # BASELINE: ligado por variavel de ambiente, DESLIGADO no padrao.
+    #
+    # O primeiro boot contra producao encontra um schema populado (todas as
+    # tabelas da V1, criadas pelo `prisma db push` do Node) e SEM
+    # flyway_schema_history. Com baseline-on-migrate falso, o Flyway aborta
+    # nesse cenario e a aplicacao nao sobe. Com verdadeiro, ele grava a V1
+    # como baseline, cria o historico e aplica V2 e V3.
+    #
+    # POR QUE VARIAVEL, E NAO `true` COMMITADO. "Schema populado sem
+    # historico" e estado normal UMA vez na vida deste projeto: o corte. Em
+    # qualquer outro dia, e sintoma -- historico perdido, banco restaurado
+    # pela metade, apontamento para o banco errado -- e nesses casos o aborto
+    # e a resposta certa, porque chama um humano. Deixar `true` fixo troca
+    # permanentemente um aborto por uma suposicao.
+    #
+    # No dia do corte: FLYWAY_BASELINE_ON_MIGRATE=true no Railway, subir,
+    # confirmar o historico, e REMOVER a variavel. Reverter nao exige
+    # alteracao de codigo nem novo deploy do artefato.
+    #
+    # O QUE ESTA VARIAVEL NAO PROTEGE -- leia antes de ligar.
+    #
+    # O baseline e uma AFIRMACAO, nao uma conferencia: ele grava "este banco
+    # esta na versao 1" sem comparar um unico objeto com a V1. A linha de
+    # BASELINE nasce ate sem checksum, entao `validate-on-migrate` nao tem
+    # com o que confrontar a V1. Se producao divergir da V1, o Flyway nao
+    # acusa -- ele nao olha.
+    #
+    # Quem olha, e o que cada um pega. Medido com dois bancos derivados de
+    # proposito, V1 aplicada e um objeto removido a mao:
+    #
+    #   * coluna MAPEADA removida (appointments.notes): a aplicacao NAO
+    #     sobe. Quem barra e o `ddl-auto: validate` do Hibernate, com
+    #     "Schema validation: missing column [notes] in table [appointments]".
+    #   * indice unico removido (appointments_cancel_token_key): a aplicacao
+    #     SOBE normalmente, e o indice continua ausente depois do boot. A
+    #     unicidade de cancel_token desapareceria sem uma linha de log.
+    #
+    # Ou seja, a faixa cega e tudo que o Hibernate nao confere: indice, FK,
+    # default, unique e check. A constraint de sobreposicao e o completed_at
+    # estao fora dela so porque o VerificaAConstraintDeSobreposicao os
+    # confere explicitamente no boot -- e ele existe por isso.
+    #
+    # A UNICA cobertura dessa faixa e verificacao por fora, ANTES de ligar:
+    #
+    #     npx prisma migrate diff --to-schema-datamodel ./prisma/schema.prisma
+    #       --from-url "<DATABASE_URL de producao>" --script
+    #
+    # no backend Node (somente leitura). Saida vazia = producao bate com o
+    # schema.prisma e, por consequencia, com a V1. Foi assim que a premissa
+    # deste baseline foi verificada. Se voce esta ligando esta variavel sem
+    # ter rodado isso, voce nao sabe o que esta afirmando.
+    #
+    # E um agravante de ordem: o Flyway roda ANTES do validate do Hibernate.
+    # No teste da coluna removida, V2 e V3 foram aplicadas e gravadas no
+    # historico, e so depois o boot abortou. A falha acontece DEPOIS da
+    # escrita, nao antes dela -- nao conte com o aborto para deixar o banco
+    # intocado.
+    baseline-on-migrate: ${FLYWAY_BASELINE_ON_MIGRATE:false}
+
+    # Explicito de proposito: este numero decide o que o baseline considera
+    # ja aplicado. 1 marca so a V1; V2 e V3, por serem maiores, rodam. E o
+    # default do Flyway, mas e o parametro mais perigoso do bloco para ficar
+    # implicito -- um 3 aqui pularia a constraint em silencio.
+    baseline-version: 1
+
+    # Tambem o default. Confere o checksum das migrations ja aplicadas contra
+    # os arquivos; nao confere o DDL do banco. Vale para V2 e V3 depois do
+    # corte -- a linha de baseline nao tem checksum para comparar.
+    validate-on-migrate: true
 
 server:
   port: ${PORT:8080}
