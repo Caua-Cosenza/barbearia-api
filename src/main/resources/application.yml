@@ -23,6 +23,42 @@ spring:
       maximum-pool-size: ${DB_POOL_MAX:10}
       minimum-idle: ${DB_POOL_MIN:2}
 
+      # deadlock_timeout de 100ms, SO nas conexoes desta aplicacao.
+      #
+      # POR QUE. Cinquenta reservas simultaneas para o MESMO horario nao
+      # esperam em fila: elas formam ciclos mutuos de espera. Cada transacao
+      # insere sua tupla e so entao confere o indice da constraint de
+      # exclusao, entao duas que inseriram antes de qualquer uma conferir
+      # passam a se esperar. Isso e deadlock de verdade, e quem o desfaz e o
+      # detector do Postgres -- uma vez a cada deadlock_timeout. Com o padrao
+      # de 1s, os 49 perdedores de uma disputa sao desfeitos a um por segundo,
+      # a rodada leva ~49s, e quem fica na fila do pool estoura o
+      # connectionTimeout de 30s e recebe 500.
+      #
+      # POR QUE connection-init-sql, E NAO `options` NA URL. Os dois valem so
+      # para esta aplicacao, mas falham de formas diferentes quando o papel do
+      # banco nao tem permissao: `options` recusa a CONEXAO com FATAL, e a
+      # aplicacao nao sobe; o SET de sessao falha na criacao da conexao do
+      # pool, que e igualmente grave mas aparece com o SQL na mensagem. O SET
+      # tambem fica visivel aqui, em vez de escondido numa query string.
+      #
+      # NAO foi usado ALTER DATABASE nem ALTER ROLE: os dois pegariam toda
+      # conexao ao banco, inclusive psql, ferramenta de migration e o backend
+      # Node durante o corte. O pedido era afetar so a aplicacao.
+      #
+      # ATENCAO, PRODUCAO: deadlock_timeout e parametro de contexto
+      # `superuser`. Funciona aqui porque o papel do container e superusuario;
+      # num banco gerenciado o papel da aplicacao normalmente nao e, e a
+      # criacao de conexao passa a falhar com
+      # "permission denied to set parameter". A liberacao e um comando de
+      # superusuario, uma vez por banco:
+      #
+      #     GRANT SET ON PARAMETER deadlock_timeout TO <papel_da_aplicacao>;
+      #
+      # Verificado neste Postgres 18.6: com o GRANT, um papel NOSUPERUSER faz
+      # o SET sem erro.
+      connection-init-sql: SET deadlock_timeout = '100ms'
+
   data:
     redis:
       url: ${REDIS_URL:}
