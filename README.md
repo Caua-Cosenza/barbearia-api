@@ -954,6 +954,11 @@ frontend em produção:
 7. **Retry com backoff no envio.** Hoje uma falha é definitiva até alguém
    reenviar à mão. Uma fila com tentativas espaçadas cobriria a instabilidade
    curta da Evolution, que é o caso comum.
+8. **Remover o `DEFAULT 50` de `slot_duration_minutes`** (V4) assim que o Node
+   sair do ar. Ele existe só para o `INSERT` do Prisma durante a convivência;
+   o Java sempre informa o valor. Um default que sobrevive ao motivo esconde
+   bug de escrita futuro — `ALTER COLUMN ... DROP DEFAULT` numa migration
+   posterior.
 
 ---
 

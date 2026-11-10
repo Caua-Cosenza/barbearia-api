@@ -373,17 +373,36 @@ class OverlapConstraintTest extends AbstractPostgresIntegrationTest {
 					.doesNotThrowAnyException();
 		}
 
+		/**
+		 * A coluna continua {@code NOT NULL}: nulo explicito e recusado.
+		 *
+		 * <p><b>Mudou o que este teste afirma, e vale saber por que.</b> Antes
+		 * ele dizia "a V2 nao deu default" e provava isso <i>omitindo</i> a
+		 * coluna no INSERT. A V4 passou a dar default 50, para que o INSERT do
+		 * Prisma -- que nao conhece a coluna -- sobreviva a convivencia com o
+		 * backend Node; omitir deixou de falhar. O caso da omissao esta em
+		 * {@code ConvivenciaComONodeTest}, que e quem cuida dele.
+		 *
+		 * <p>O que importa para a constraint, e que esta classe guarda, e
+		 * outra coisa: a coluna nunca pode ser NULA, porque
+		 * {@code make_interval(mins => NULL)} produziria um range nulo e a
+		 * linha sairia do indice -- deixando de ocupar a agenda sem que nada
+		 * reclamasse. O default cobre quem esquece de informar; o NOT NULL
+		 * cobre quem informa nulo. Sao duas protecoes diferentes, e so a
+		 * segunda e desta classe.
+		 */
 		@Test
-		@DisplayName("slot_duration_minutes e NOT NULL — a V2 nao deu default")
-		void colunaEhObrigatoria() {
+		@DisplayName("slot_duration_minutes e NOT NULL — nulo explicito e recusado")
+		void colunaNaoAceitaNulo() {
 			Barber barbeiro = novoBarbeiro("Jhonatan");
 			Service servico = novoServico("Corte", CINQUENTA);
 
 			assertThatThrownBy(() -> jdbc.update("""
 					INSERT INTO "appointments" ("id", "professional_id", "service_id", "amount_cents",
-					                            "scheduled_at", "status", "updated_at")
-					VALUES ('sem-duracao', ?, ?, 5000, '2026-03-10 13:00:00'::timestamp,
-					        'PENDING'::"AppointmentStatus", now())
+					                            "scheduled_at", "status", "slot_duration_minutes",
+					                            "updated_at")
+					VALUES ('duracao-nula', ?, ?, 5000, '2026-03-10 13:00:00'::timestamp,
+					        'PENDING'::"AppointmentStatus", NULL, now())
 					""", barbeiro.getId(), servico.getId()))
 					.isInstanceOf(DataIntegrityViolationException.class);
 		}
